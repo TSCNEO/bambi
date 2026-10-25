@@ -1,0 +1,102 @@
+package com.shieldstream.tv.settings.profiles
+
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.shieldstream.tv.domain.TraktAuthPoll
+import com.shieldstream.tv.domain.TraktRepository
+import com.shieldstream.tv.model.tr
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+
+sealed interface TraktConnectUiState {
+    data object Loading : TraktConnectUiState
+
+    /** Código en pantalla: se escribe en [url] desde el móvil. [secondsLeft] hasta que caduca. */
+    data class ShowCode(val userCode: String, val url: String, val secondsLeft: Int) : TraktConnectUiState
+
+    data class Connected(val username: String) : TraktConnectUiState
+
+    data object Expired : TraktConnectUiState
+
+    data class Error(val message: String) : TraktConnectUiState
+}
+
+/**
+ * Enlazar Trakt con un código, como se enlaza Netflix en una tele: se pide un código, se muestra, y se pregunta a
+ * Trakt cada pocos segundos si ya lo has escrito en el móvil. Ruta "trakt_connect/{id}" (id del perfil).
+ */
+@HiltViewModel
+class TraktConnectViewModel @Inject constructor(
+    savedState: SavedStateHandle,
+    private val trakt: TraktRepository,
+) : ViewModel() {
+
+    private val profileId: String = checkNotNull(savedState.get<String>("id"))
+
+    private val _uiState = MutableStateFlow<TraktConnectUiState>(TraktConnectUiState.Loading)
+    val uiState: StateFlow<TraktConnectUiState> = _uiState.asStateFlow()
+
+    private var job: Job? = null
+
+    init {
+        start()
+    }
+
+    /** Pide un código (también "Pedir otro código" tras caducar o fallar). */
+    fun start() {
+        job?.cancel()
+        _uiState.value = TraktConnectUiState.Loading
+        job = viewModelScope.launch {
+            val code = trakt.requestDeviceCode().getOrElse {
+                _uiState.value = TraktConnectUiState.Error(
+                    it.message ?: tr("No se pudo contactar con Trakt.", "Couldn't reach Trakt."),
+                )
+                return@launch
+            }
+            val deadline = System.currentTimeMillis() + code.expiresInSeconds * 1000L
+            var interval = code.intervalSeconds.coerceAtLeast(1) * 1000L
+            var nextPoll = System.currentTimeMillis() + interval
+            while (true) {
+                val now = System.currentTimeMillis()
+                if (now >= deadline) {
+                    _uiState.value = TraktConnectUiState.Expired
+                    return@launch
+                }
+                _uiState.value = TraktConnectUiState.ShowCode(code.userCode, code.verificationUrl, ((deadline - now) / 1000).toInt())
+                if (now >= nextPoll) {
+                    when (val result = trakt.pollDeviceToken(profileId, code)) {
+                        is TraktAuthPoll.Connected -> {
+                            _uiState.value = TraktConnectUiState.Connected(result.username)
+                            return@launch
+                        }
+                        TraktAuthPoll.Pending -> Unit
+                        TraktAuthPoll.SlowDown -> interval += 1000
+                        TraktAuthPoll.Expired -> {
+                            _uiState.value = TraktConnectUiState.Expired
+                            return@launch
+                        }
+                        TraktAuthPoll.Denied -> {
+                            _uiState.value = TraktConnectUiState.Error(
+                                tr("Has rechazado el acceso en Trakt.", "You declined access on Trakt."),
+                            )
+                            return@launch
+                        }
+                        is TraktAuthPoll.Failed -> {
+                            _uiState.value = TraktConnectUiState.Error(result.message)
+                            return@launch
+                        }
+                    }
+                    nextPoll = System.currentTimeMillis() + interval
+                }
+                delay(1000) // el contador baja cada segundo
+            }
+        }
+    }
+}

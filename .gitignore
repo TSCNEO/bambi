@@ -1,0 +1,34 @@
+# --- Compilación (se regenera) ---
+build/
+.gradle/
+.kotlin/
+*.apk
+*.aab
+.externalNativeBuild/
+.cxx/
+
+# --- Secretos: NUNCA a git (haz copia de seguridad aparte) ---
+local.properties
+keystore/
+*.jks
+*.keystore
+
+# --- Versiones generadas (los APK) ---
+releases/
+
+# --- Ficheros de trabajo del bucle con Claude ---
+_shots/
+_archivo/
+.build_*
+.adb_*
+.av1_*
+.git_request
+.git_running
+.git_log.txt
+.git_msg
+
+# --- IDE / sistema ---
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
