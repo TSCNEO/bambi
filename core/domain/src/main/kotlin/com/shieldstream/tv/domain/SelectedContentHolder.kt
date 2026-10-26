@@ -7,6 +7,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+/** Episodio que va después del que se reproduce (lo calcula la ficha). [label]: "T1:E2 · Capítulo 2". */
+data class NextEpisode(val showId: String, val season: Int, val episode: Int, val label: String)
+
 /**
  * Estado de navegación compartido en memoria (selección actual).
  * Evita serializar objetos complejos como argumentos de navegación.
@@ -38,9 +41,31 @@ class SelectedContentHolder {
     private val _media = MutableStateFlow<PlaybackMedia?>(null)
     val media: StateFlow<PlaybackMedia?> = _media.asStateFlow()
 
+    /** Siguiente episodio de lo que se va a reproducir (null: película o último episodio). */
+    private val _next = MutableStateFlow<NextEpisode?>(null)
+    val next: StateFlow<NextEpisode?> = _next.asStateFlow()
+
+    /** El reproductor pide el siguiente episodio al salir; la ficha lo recoge al volver a verse. */
+    @Volatile private var nextRequested: NextEpisode? = null
+
+    fun requestNext(next: NextEpisode) {
+        nextRequested = next
+    }
+
+    fun consumeNextRequest(): NextEpisode? = nextRequested.also { nextRequested = null }
+
+    /** El reproductor está en los créditos: la ficha (debajo) ya puede ir buscando las fuentes del siguiente. */
+    private val _prefetch = MutableStateFlow<NextEpisode?>(null)
+    val prefetch: StateFlow<NextEpisode?> = _prefetch.asStateFlow()
+
+    fun prefetchNext(next: NextEpisode) {
+        _prefetch.value = next
+    }
+
     fun selectItem(item: CatalogItem) {
         _selectedItem.value = item
         _queue.value = emptyList()
+        _prefetch.value = null
     }
 
     fun playQueue(
@@ -49,7 +74,9 @@ class SelectedContentHolder {
         progressKey: String? = null,
         fromStart: Boolean = false,
         media: PlaybackMedia? = null,
+        next: NextEpisode? = null,
     ) {
+        _next.value = next
         _media.value = media
         _queue.value = sources
         _playLabel.value = label

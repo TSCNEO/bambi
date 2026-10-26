@@ -107,6 +107,7 @@ fun HomeScreen(
 ) {
     LaunchedEffect(filter) { viewModel.load(filter) }
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val hidden by viewModel.hiddenCategories.collectAsStateWithLifecycle()
 
     when (val s = state) {
         // Mismo fondo que la portada para que al terminar de cargar no haya "salto" de color.
@@ -133,7 +134,14 @@ fun HomeScreen(
         is HomeUiState.Content -> HomeContent(
             rows = s.rows,
             featured = s.featured,
-            categories = remember(filter) { Category.forFilter(filter) },
+            categories = remember(filter, hidden) {
+                when {
+                    // Perfil infantil: solo Infantiles y Para toda la familia (no se pueden ocultar).
+                    viewModel.kidsProfile -> Category.forFilter(filter).filter { it in Category.KIDS_SAFE }
+                    // Si se ocultaran todas las de esta pestaña, se enseñan todas (la fila de botones no puede quedar vacía).
+                    else -> Category.forFilter(filter).filter { it.name !in hidden }.ifEmpty { Category.forFilter(filter) }
+                }
+            },
             onItemClick = onItemClick,
             onOpenCategory = onOpenCategory,
             onRemoveContinue = viewModel::removeFromContinue,
@@ -348,7 +356,9 @@ internal fun RowsBrowser(
                 }
                 HeroInfo(item = hero)
             }
-            ProvidePivotScroll(leading = 42.dp) { // deja visible el título de la fila enfocada
+            // Deja visible el título de la fila enfocada. 51 dp = los 42 de antes + lo que crece hacia arriba el póster
+            // enfocado (×1.1): ahora se alinea la tarjeta sin escalar (ver PosterCard), así la pantalla queda igual.
+            ProvidePivotScroll(leading = 51.dp) {
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth().weight(1f),
                     contentPadding = PaddingValues(bottom = 260.dp),
@@ -416,7 +426,8 @@ private fun CatalogRowView(
         }
         // Con menos de 8 títulos no hay bucle: si cambia (p. ej. al quitar uno), la fila empieza de cero.
         key(shouldLoop(row.items.size)) {
-            ProvidePivotScroll(leading = ContentStart) {
+            // + 6 dp: lo que crece por cada lado el póster enfocado; así su borde sigue alineado con el título de la fila.
+            ProvidePivotScroll(leading = ContentStart + 6.dp) {
                 LazyRow(
                     state = rememberLoopingRowState(row.items.size),
                     contentPadding = PaddingValues(horizontal = ContentStart, vertical = 14.dp),

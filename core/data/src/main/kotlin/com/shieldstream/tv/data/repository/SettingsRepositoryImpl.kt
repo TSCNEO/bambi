@@ -29,6 +29,41 @@ class SettingsRepositoryImpl @Inject constructor(
     )
     private val maxBufferFlow = MutableStateFlow(prefs.getInt(KEY_BUFFER, DEFAULT_BUFFER))
     private val seekThumbnailsFlow = MutableStateFlow(prefs.getBoolean(KEY_SEEK_THUMBNAILS, true))
+    private val spanishFirstFlow = MutableStateFlow(prefs.getBoolean(KEY_SPANISH_FIRST, !Lang.isEnglish))
+    override val spanishFirst: Flow<Boolean> = spanishFirstFlow
+
+    override suspend fun setSpanishFirst(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_SPANISH_FIRST, enabled).apply()
+        spanishFirstFlow.value = enabled
+    }
+    private val spanishOnlyFlow = MutableStateFlow(prefs.getBoolean(KEY_SPANISH_ONLY, false))
+    override val spanishOnlySources: Flow<Boolean> = spanishOnlyFlow
+
+    override suspend fun setSpanishOnlySources(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_SPANISH_ONLY, enabled).apply()
+        spanishOnlyFlow.value = enabled
+    }
+    private val autoNextFlow = MutableStateFlow(prefs.getBoolean(KEY_AUTO_NEXT, true))
+    override val autoNextEpisode: Flow<Boolean> = autoNextFlow
+
+    override suspend fun setAutoNextEpisode(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_AUTO_NEXT, enabled).apply()
+        autoNextFlow.value = enabled
+    }
+    private val searchQwertyFlow = MutableStateFlow(prefs.getBoolean(KEY_SEARCH_QWERTY, false))
+    override val searchQwerty: Flow<Boolean> = searchQwertyFlow
+
+    override suspend fun setSearchQwerty(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_SEARCH_QWERTY, enabled).apply()
+        searchQwertyFlow.value = enabled
+    }
+    private val hiddenCategoriesFlow = MutableStateFlow(prefs.getStringSet(KEY_HIDDEN_CATEGORIES, emptySet()).orEmpty().toSet())
+    override val hiddenCategories: Flow<Set<String>> = hiddenCategoriesFlow
+
+    override suspend fun setHiddenCategories(names: Set<String>) {
+        prefs.edit().putStringSet(KEY_HIDDEN_CATEGORIES, names).apply()
+        hiddenCategoriesFlow.value = names
+    }
     private val debridFlow = MutableStateFlow(
         runCatching { DebridService.valueOf(prefs.getString(KEY_DEBRID, null) ?: "") }
             .getOrDefault(DebridService.REAL_DEBRID),
@@ -89,6 +124,11 @@ class SettingsRepositoryImpl @Inject constructor(
         const val KEY_PROVIDER = "catalog_provider"
         const val KEY_BUFFER = "max_buffer_seconds"
         const val KEY_SEEK_THUMBNAILS = "seek_thumbnails"
+        const val KEY_SPANISH_FIRST = "spanish_first"
+        const val KEY_HIDDEN_CATEGORIES = "hidden_categories"
+        const val KEY_SEARCH_QWERTY = "search_qwerty"
+        const val KEY_AUTO_NEXT = "auto_next_episode"
+        const val KEY_SPANISH_ONLY = "spanish_only_sources"
         const val KEY_DEBRID = "debrid_service"
         const val KEY_PROVIDERS_OFF = "source_providers_off"
         const val DEFAULT_BUFFER = 80

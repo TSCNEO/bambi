@@ -3,7 +3,11 @@ package com.shieldstream.tv.data.repository
 import android.content.Context
 import android.util.Log
 import com.shieldstream.tv.data.security.TokenStore
+import com.shieldstream.tv.domain.MyListChange
+import com.shieldstream.tv.domain.MyListEntry
+import com.shieldstream.tv.domain.MyListRepository
 import com.shieldstream.tv.domain.ProfileRepository
+import com.shieldstream.tv.model.MediaType
 import com.shieldstream.tv.domain.ScrobbleAction
 import com.shieldstream.tv.domain.TraktAuthPoll
 import com.shieldstream.tv.domain.TraktCredentials
@@ -57,6 +61,7 @@ class TraktRepositoryImpl @Inject constructor(
     private val credentials: TraktCredentials,
     private val profiles: ProfileRepository,
     private val progress: WatchProgressRepository,
+    private val myList: MyListRepository,
     private val tokens: TokenStore,
     private val json: Json,
 ) : TraktRepository {
@@ -82,6 +87,10 @@ class TraktRepositoryImpl @Inject constructor(
         scope.launch {
             // "Quitar de Seguir viendo" (o empezar de nuevo) → también fuera de Trakt, si no la otra Shield lo sigue viendo.
             progress.cleared.collect { key -> removePlayback(profiles.active.value.id, key) }
+        }
+        scope.launch {
+            // "Mi lista" añadida o quitada en esta tele → watchlist de Trakt.
+            myList.changes.collect { pushWatchlist(it) }
         }
     }
 
@@ -229,14 +238,33 @@ class TraktRepositoryImpl @Inject constructor(
             p.isResumable && key in previousRemote && key !in remotePlayback && key !in incoming && p.updatedAt < lastSync
         }.keys
 
+        // 4) Mi lista = watchlist. Se añade lo nuevo de Trakt; se quita lo que estaba allí la última vez y ya no.
+        val remoteList = ArrayList<MyListEntry>()
+        for ((kind, type, field) in listOf(Triple("movies", MediaType.MOVIE, "movie"), Triple("shows", MediaType.TV, "show"))) {
+            val response = client.get("/sync/watchlist/$kind", token)
+            if (!response.ok) throw TraktHttpException(response.code)
+            for (element in (response.body as? JsonArray).orEmpty()) {
+                val item = element.jsonObject
+                val id = item.obj(field)?.obj("ids")?.int("tmdb") ?: continue
+                remoteList += MyListEntry(type, id.toString(), TraktClient.parseDate(item.string("listed_at")) ?: 0L)
+            }
+        }
+        val remoteListKeys = remoteList.map { it.key }.toSet()
+        val previousList = syncPrefs.getStringSet("wl_$profileId", null).orEmpty()
+        val localList = myList.entries.value.map { it.key }.toSet()
+        val listAdded = remoteList.filter { it.key !in localList }
+        val listGone = localList.filter { it in previousList && it !in remoteListKeys }
+
         // El perfil pudo cambiar mientras se descargaba: solo se aplica si sigue siendo el activo.
         if (profiles.active.value.id != profileId) return
         progress.importRemote(incoming)
         progress.removeRemote(gone)
+        myList.importRemote(listAdded, listGone)
         syncPrefs.edit()
             .putString(markerKey, marker)
             .putLong("last_$profileId", System.currentTimeMillis())
             .putStringSet("remote_$profileId", HashSet(remotePlayback))
+            .putStringSet("wl_$profileId", HashSet(remoteListKeys))
             .apply()
         Log.i(TAG, "Sincronizado: ${incoming.size} cambios, ${gone.size} quitados")
     }
@@ -268,6 +296,11 @@ class TraktRepositoryImpl @Inject constructor(
         runCatching {
             val watched = all.filter { it.value.isWatched }
             if (watched.isNotEmpty()) client.post("/sync/history", historyBody(watched), token)
+            // Mi lista de esta tele → watchlist (solo si es el perfil que se está usando: es la que está cargada).
+            if (profiles.active.value.id == profileId && myList.entries.value.isNotEmpty()) {
+                delay(POST_SPACING_MS)
+                client.post("/sync/watchlist", watchlistBody(myList.entries.value.map { it.type to it.id }), token)
+            }
             all.filter { it.value.isResumable }
                 .entries.sortedByDescending { it.value.updatedAt }
                 .take(MAX_UPLOAD_RESUMABLE)
@@ -277,6 +310,31 @@ class TraktRepositoryImpl @Inject constructor(
                     client.post("/scrobble/pause", item.with("progress", JsonPrimitive(p.fraction * 100f)), token)
                 }
         }.onFailure { Log.w(TAG, "Subida inicial fallida: ${it.message}") }
+    }
+
+    /** "Mi lista" → watchlist de Trakt (o fuera de ella). */
+    private fun pushWatchlist(change: MyListChange) {
+        val profileId = profiles.active.value.id
+        if (session(profileId) == null) return
+        val path = if (change.added) "/sync/watchlist" else "/sync/watchlist/remove"
+        scope.launch {
+            val token = validToken(profileId) ?: return@launch
+            runCatching { client.post(path, watchlistBody(listOf(change.type to change.id)), token) }
+                .onSuccess { if (!it.ok) Log.w(TAG, "Watchlist $path: HTTP ${it.code}") }
+                .onFailure { Log.w(TAG, "Watchlist $path fallida: ${it.message}") }
+        }
+    }
+
+    private fun watchlistBody(items: List<Pair<MediaType, String>>): JsonObject {
+        fun list(type: MediaType) = buildJsonArray {
+            items.filter { it.first == type }.mapNotNull { it.second.toIntOrNull() }.forEach { id ->
+                add(buildJsonObject { put("ids", buildJsonObject { put("tmdb", id) }) })
+            }
+        }
+        return buildJsonObject {
+            put("movies", list(MediaType.MOVIE))
+            put("shows", list(MediaType.TV))
+        }
     }
 
     private fun historyBody(watched: Map<String, WatchProgress>): JsonObject {
@@ -361,6 +419,26 @@ class TraktRepositoryImpl @Inject constructor(
                 .onFailure { Log.w(TAG, "Scrobble $action fallido: ${it.message}") }
             // Lo que queda a medias tiene ahora otro id en Trakt: se vuelve a leer en la próxima sincronización.
             playbackIds.remove(progressKey)
+        }
+    }
+
+    override fun setWatched(progressKeys: Collection<String>, watched: Boolean) {
+        val profileId = profiles.active.value.id
+        if (session(profileId) == null || progressKeys.isEmpty()) return
+        val now = System.currentTimeMillis()
+        // Lo que estaba a medias (antes del cambio local) también se quita de "a medias" en Trakt.
+        val wasResumable = if (watched) progressKeys.filter { progress.progress.value[it]?.isResumable == true } else emptyList()
+        val body = historyBody(progressKeys.associateWith { WatchProgress(positionMs = 1, durationMs = 1, updatedAt = now) })
+        val path = if (watched) "/sync/history" else "/sync/history/remove"
+        scope.launch {
+            val token = validToken(profileId) ?: return@launch
+            runCatching { client.post(path, body, token) }
+                .onSuccess { if (!it.ok) Log.w(TAG, "Historial $path: HTTP ${it.code}") }
+                .onFailure { Log.w(TAG, "Historial $path fallido: ${it.message}") }
+            wasResumable.forEach { key ->
+                delay(POST_SPACING_MS) // Trakt: como mucho 1 escritura por segundo
+                removePlayback(profileId, key)
+            }
         }
     }
 

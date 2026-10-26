@@ -146,6 +146,13 @@ class TorrentioLinkResolverImpl @Inject constructor(base: OkHttpClient) : Torren
 }
 
 /** URL del manifiesto de AIOStreams (también stremio://…) → base para pedir /stream/{type}/{id}.json. */
+/**
+ * Varios addons en el mismo campo: URLs separadas por espacios, comas o saltos de línea (en la tele, con el teclado
+ * del sistema, se pegan una detrás de otra). Devuelve las bases válidas, sin repetir.
+ */
+internal fun aioStreamBases(raw: String): List<String> =
+    raw.split(Regex("[\\s,;]+")).mapNotNull { aioStreamBase(it) }.distinct()
+
 internal fun aioStreamBase(manifestUrl: String): String? {
     val u = manifestUrl.trim().replaceFirst("stremio://", "https://")
     if (!u.startsWith("http") || !u.endsWith("/manifest.json")) return null

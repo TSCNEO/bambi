@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.shieldstream.tv.domain.ProfileRepository
 import com.shieldstream.tv.domain.TraktRepository
 import com.shieldstream.tv.model.Profile
+import com.shieldstream.tv.model.ProfilePin
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +28,7 @@ sealed interface ProfileEditUiState {
         /** Primer OK en "Eliminar" / "Desconectar Trakt": el segundo confirma (como un aviso de Netflix). */
         val confirmDelete: Boolean = false,
         val confirmDisconnect: Boolean = false,
+        val confirmRemovePin: Boolean = false,
         val busy: Boolean = false,
     ) : ProfileEditUiState
 }
@@ -74,6 +76,22 @@ class ProfileEditViewModel @Inject constructor(
 
     fun setAvatar(index: Int) = edit { it.copy(profile = it.profile.copy(avatar = index), confirmDelete = false) }
 
+    /** Perfil infantil: solo contenido para niños en Inicio, categorías y Buscar. Se aplica al guardar. */
+    fun setKids(kids: Boolean) = edit { it.copy(profile = it.profile.copy(kids = kids), confirmDelete = false) }
+
+    /** PIN ya escrito dos veces (ver PinDialog en la pantalla). Se guarda solo su hash, al guardar el perfil. */
+    fun setPin(pin: String) = edit { it.copy(profile = it.profile.copy(pinHash = ProfilePin.hash(it.profile.id, pin)), confirmRemovePin = false) }
+
+    /** Primer OK pide confirmación; el segundo quita el PIN (al guardar). */
+    fun removePin() {
+        val state = _uiState.value as? ProfileEditUiState.Editing ?: return
+        if (!state.confirmRemovePin) {
+            edit { it.copy(confirmRemovePin = true) }
+            return
+        }
+        edit { it.copy(profile = it.profile.copy(pinHash = null), confirmRemovePin = false) }
+    }
+
     /** Guarda y devuelve el id (para enlazar Trakt justo después en un perfil nuevo). */
     fun save(): String? {
         val state = _uiState.value as? ProfileEditUiState.Editing ?: return null
@@ -110,7 +128,7 @@ class ProfileEditViewModel @Inject constructor(
     }
 
     /** Al mover el foco a otra cosa, los "¿seguro?" se olvidan. */
-    fun cancelConfirmations() = edit { it.copy(confirmDelete = false, confirmDisconnect = false) }
+    fun cancelConfirmations() = edit { it.copy(confirmDelete = false, confirmDisconnect = false, confirmRemovePin = false) }
 
     private fun edit(transform: (ProfileEditUiState.Editing) -> ProfileEditUiState.Editing) {
         _uiState.update { s -> if (s is ProfileEditUiState.Editing) transform(s) else s }

@@ -48,6 +48,8 @@ data class TmdbSearchResultDto(
     val first_air_date: String? = null,
     val vote_average: Double = 0.0,
     val vote_count: Int = 0,
+    /** Para el perfil infantil (búsqueda): animación 16, familia 10751, infantil (series) 10762. */
+    val genre_ids: List<Int> = emptyList(),
 )
 
 @Serializable
@@ -150,6 +152,8 @@ data class TmdbTvDetailDto(
     val translations: TmdbTranslationsDto? = null,
     val content_ratings: TmdbContentRatingsDto? = null,
     val number_of_seasons: Int = 0,
+    /** "ja" + género Animación = anime: sus releases suelen ir con numeración absoluta ("One Piece - 1100"). */
+    val original_language: String? = null,
 )
 
 @Serializable

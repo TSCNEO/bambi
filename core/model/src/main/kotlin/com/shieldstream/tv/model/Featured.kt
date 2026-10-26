@@ -23,29 +23,46 @@ data class FeaturedItem(
     val certification: String?,
 )
 
-/** Botones de categoría bajo la portada (en bucle). Cada uno abre su pantalla con filas. */
+/**
+ * Botones de categoría bajo la portada (en bucle). Cada uno abre su pantalla con filas.
+ * El orden de aquí es el de los botones. En Ajustes → "Categorías del Inicio" se pueden ocultar (se guarda el
+ * nombre de las ocultas: las que se añadan en versiones nuevas salen visibles).
+ */
 enum class Category(val title: String, val forMovies: Boolean = true, val forTv: Boolean = true) {
     DRAMAS("Dramas"),
     THRILLERS("Thrillers"),
+    HORROR(tr("Terror", "Horror")),
     MOODS(tr("Estados de ánimo", "Moods")),
     CRIME(tr("Policiacas", "Crime")),
+    SPANISH(tr("Españolas", "Spanish")),
     ACTION(tr("Acción", "Action")),
+    ADVENTURE(tr("Aventuras", "Adventure")),
     BOOKS(tr("Adaptaciones de libros", "Based on books")),
     COMEDY(tr("Comedias", "Comedies")),
     HALLOWEEN("Halloween"),
     REALITY(tr("Realities", "Reality TV"), forMovies = false),
     FANTASY(tr("Fantásticas", "Fantasy")),
     SCIFI(tr("Ciencia ficción", "Sci-fi")),
+    MYSTERY(tr("Misterio", "Mystery")),
     ANIMATION(tr("Animación", "Animation")),
+    KIDS(tr("Infantiles", "Kids")),
     ROMANCE(tr("Románticas", "Romance")),
     FAMILY(tr("Para toda la familia", "Family")),
     ANIME("Anime"),
+    KOREAN(tr("Coreanas", "Korean")),
     DOCUMENTARY(tr("Documentales", "Documentaries")),
+    TRUE_CRIME(tr("Crímenes reales", "True crime")),
+    WAR_HISTORY(tr("Bélicas e históricas", "War & history")),
+    WESTERN("Western"),
+    MUSIC(tr("Musicales", "Musicals"), forTv = false),
     ASTROLOGY(tr("Astrología", "Astrology")),
     STANDUP("Stand-up"),
     ;
 
     companion object {
+        /** Las únicas que se enseñan en un perfil infantil. */
+        val KIDS_SAFE = setOf(KIDS, FAMILY)
+
         fun forFilter(filter: HomeFilter): List<Category> = entries.filter {
             when (filter) {
                 HomeFilter.ALL -> true

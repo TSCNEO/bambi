@@ -70,6 +70,9 @@ fun ProfilePickerScreen(
         return
     }
     var manage by rememberSaveable { mutableStateOf(false) }
+    // Perfil con PIN: antes de entrar (o de editarlo) se pide el PIN. (perfil, ¿es para editar?)
+    var pinFor by remember { mutableStateOf<Pair<Profile, Boolean>?>(null) }
+    var pinError by remember { mutableStateOf<String?>(null) }
     val activeRequester = remember { FocusRequester() }
     LaunchedEffect(manage) {
         // Al arrancar justo tras el salvapantallas la ventana tarda en tener el foco: se insiste unas veces.
@@ -112,11 +115,16 @@ fun ProfilePickerScreen(
                         profile = profile,
                         manage = manage,
                         onClick = {
-                            if (manage) {
-                                onEdit(profile.id)
-                            } else {
-                                viewModel.select(profile.id)
-                                onSelected()
+                            when {
+                                profile.locked -> {
+                                    pinError = null
+                                    pinFor = profile to manage
+                                }
+                                manage -> onEdit(profile.id)
+                                else -> {
+                                    viewModel.select(profile.id)
+                                    onSelected()
+                                }
                             }
                         },
                         modifier = if (profile.id == ready.activeId) Modifier.focusRequester(activeRequester) else Modifier,
@@ -131,6 +139,32 @@ fun ProfilePickerScreen(
                 onClick = { manage = !manage },
             )
         }
+    }
+
+    pinFor?.let { (profile, forEdit) ->
+        PinDialog(
+            title = tr("PIN de ${profile.name}", "${profile.name}'s PIN"),
+            subtitle = tr("Escribe el PIN de 4 cifras para entrar", "Enter the 4-digit PIN"),
+            error = pinError,
+            onPin = { pin ->
+                if (com.shieldstream.tv.model.ProfilePin.matches(profile, pin)) {
+                    pinFor = null
+                    pinError = null
+                    if (forEdit) {
+                        onEdit(profile.id)
+                    } else {
+                        viewModel.select(profile.id)
+                        onSelected()
+                    }
+                } else {
+                    pinError = tr("PIN incorrecto", "Wrong PIN")
+                }
+            },
+            onDismiss = {
+                pinFor = null
+                pinError = null
+            },
+        )
     }
 }
 
@@ -180,13 +214,19 @@ private fun ProfileTile(profile: Profile, manage: Boolean, onClick: () -> Unit, 
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
         )
-        if (profile.traktUser != null) {
-            Text(
-                "Trakt ✓",
-                color = TraktRed.copy(alpha = if (focused) 1f else 0.7f),
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
+        // Debajo del nombre: Trakt, infantil y candado (con PIN), en una línea pequeña.
+        if (profile.traktUser != null || profile.kids || profile.locked) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (profile.traktUser != null) {
+                    Text("Trakt ✓", color = TraktRed.copy(alpha = if (focused) 1f else 0.7f), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+                if (profile.kids) {
+                    Text(tr("Infantil", "Kids"), color = Color(0xFF56CCF2).copy(alpha = if (focused) 1f else 0.75f), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+                if (profile.locked) {
+                    Icon(AppIcons.Lock, contentDescription = tr("Con PIN", "PIN protected"), tint = ProfileMuted, modifier = Modifier.size(14.dp))
+                }
+            }
         }
     }
 }

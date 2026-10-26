@@ -42,10 +42,12 @@ enum class TopTab(val label: String) {
     HOME(tr("Inicio", "Home")),
     TV(tr("Series", "TV Shows")),
     MOVIES(tr("Películas", "Movies")),
+    /** Todo lo guardado con el botón «Mi lista» de las fichas (la fila del Inicio solo enseña lo último). */
+    MY_LIST(tr("Mi lista", "My list")),
 }
 
 /**
- * Menú superior estilo Netflix: 🔍 · Inicio · Series · Películas centrados y ⚙ Ajustes a la derecha.
+ * Menú superior estilo Netflix: 🔍 · Inicio · Series · Películas · Mi lista centrados y ⚙ Ajustes a la derecha.
  * Para que ▲ desde la portada caiga en la pestaña activa, la pantalla usa focusProperties { up = selectedRequester }.
  */
 @Composable

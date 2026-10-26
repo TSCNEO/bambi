@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -102,6 +103,8 @@ fun DetailsScreen(
         }
     }
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { viewModel.onScreenHidden() }
+    // De vuelta del reproductor: si pidió el siguiente episodio, arranca aquí (ver onScreenResumed).
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.onScreenResumed() }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         when (val s = state) {
@@ -185,6 +188,8 @@ private fun DetailsContent(
                     viewModel.ensureSources()
                     panelOpen = true
                 },
+                onToggleWatched = { if (state.isSeries) viewModel.toggleSeasonWatched() else viewModel.toggleMovieWatched() },
+                onToggleMyList = viewModel::toggleMyList,
                 modifier = Modifier.padding(start = 56.dp, end = 56.dp),
             )
 
@@ -195,6 +200,7 @@ private fun DetailsContent(
                     interactive = !panelOpen,
                     onSeason = { viewModel.selectSeason(it) },
                     onEpisode = { viewModel.playEpisode(it) },
+                    onEpisodeLongPress = { viewModel.toggleEpisodeWatched(it) },
                 )
             }
         }
@@ -212,6 +218,8 @@ private fun DetailsContent(
                     panelOpen = false
                     viewModel.playSource(source)
                 },
+                isBlocked = viewModel::isBlocked,
+                onToggleSpanishOnly = viewModel::toggleSpanishOnly,
             )
         }
     }
@@ -233,6 +241,8 @@ private fun InfoBlock(
     onPlay: () -> Unit,
     onPlayFromStart: () -> Unit,
     onOpenSources: () -> Unit,
+    onToggleWatched: () -> Unit,
+    onToggleMyList: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val item = details.item
@@ -272,7 +282,12 @@ private fun InfoBlock(
         )
         Spacer(Modifier.height(20.dp))
 
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        // Sin el tope de 600 dp del texto: con "Desde el principio" y "Marcar vista" son 4 botones y no caben.
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.wrapContentWidth(Alignment.Start, unbounded = true),
+        ) {
             val progress = state.mainProgress
             val resumable = progress?.isResumable == true
             val episodeCode = state.selectedEpisode?.takeIf { state.isSeries }?.let { " ${it.code}" }.orEmpty()
@@ -301,6 +316,41 @@ private fun InfoBlock(
                 onClick = onOpenSources,
                 enabled = interactive,
             )
+            // Marcar a mano: la película, o la temporada que se ve (los episodios sueltos: mantener OK en su tarjeta).
+            val watchedLabel = if (state.isSeries) {
+                val season = state.selectedSeason
+                val eps = (state.episodes as? EpisodesState.Ready)?.episodes.orEmpty()
+                if (season != null && eps.isNotEmpty()) {
+                    if (eps.all { state.progressOf(it)?.isWatched == true }) tr("T$season vista", "S$season watched")
+                    else tr("Marcar T$season vista", "Mark S$season watched")
+                } else null
+            } else {
+                if (state.mainProgress?.isWatched == true) tr("Vista", "Watched") else tr("Marcar vista", "Mark watched")
+            }
+            if (watchedLabel != null && !state.pendingPlay) {
+                val done = if (state.isSeries) {
+                    (state.episodes as? EpisodesState.Ready)?.episodes.orEmpty().let { eps ->
+                        eps.isNotEmpty() && eps.all { state.progressOf(it)?.isWatched == true }
+                    }
+                } else {
+                    state.mainProgress?.isWatched == true
+                }
+                TvButton(
+                    text = watchedLabel,
+                    icon = if (done) AppIcons.Check else null,
+                    onClick = onToggleWatched,
+                    enabled = interactive,
+                )
+            }
+            // Mi lista (como Netflix): + para añadir, ✓ si ya está (OK la quita).
+            if (!state.pendingPlay) {
+                TvButton(
+                    text = if (state.inMyList) tr("En mi lista", "In my list") else tr("Mi lista", "My list"),
+                    icon = if (state.inMyList) AppIcons.Check else AppIcons.Add,
+                    onClick = onToggleMyList,
+                    enabled = interactive,
+                )
+            }
         }
         // Barra de visionado bajo los botones (película o episodio seleccionado), como Netflix.
         state.mainProgress?.takeIf { it.isResumable }?.let { p ->
@@ -375,7 +425,7 @@ private fun Badge(text: String) {
 @Composable
 private fun SourcesStatus(state: DetailsUiState.Content) {
     val text = state.message ?: when (val s = state.sources) {
-        SourcesState.Idle -> if (state.isSeries) tr("Elige un episodio o pulsa Reproducir", "Pick an episode or press Play") else ""
+        SourcesState.Idle -> if (state.isSeries) tr("Elige un episodio o pulsa Reproducir · mantén OK en un episodio para marcarlo visto", "Pick an episode or press Play · hold OK on an episode to mark it watched") else ""
         SourcesState.Loading -> tr("Buscando fuentes…", "Finding sources…")
         is SourcesState.Error -> s.message
         is SourcesState.Ready -> {
@@ -404,6 +454,7 @@ private fun SeasonsAndEpisodes(
     interactive: Boolean,
     onSeason: (Int) -> Unit,
     onEpisode: (Episode) -> Unit,
+    onEpisodeLongPress: (Episode) -> Unit,
 ) {
     val seasons = state.details.seasons
     Column {
@@ -449,6 +500,7 @@ private fun SeasonsAndEpisodes(
                             loading = ep == state.selectedEpisode && state.pendingPlay,
                             enabled = interactive,
                             onClick = { onEpisode(ep) },
+                            onLongClick = { onEpisodeLongPress(ep) },
                         )
                     }
                 }
@@ -487,6 +539,7 @@ private fun EpisodeCard(
     loading: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (focused) 1.06f else 1f, label = "episodeScale")
@@ -508,7 +561,8 @@ private fun EpisodeCard(
                 .background(Color(0xFF232327))
                 .then(if (focused) Modifier.border(2.dp, Color.White, shape) else Modifier)
                 .onFocusChanged { focused = it.isFocused }
-                .tvClickable(enabled = enabled, onClick = onClick),
+                // Mantener OK: visto ⇄ no visto. Con el panel de fuentes abierto (enabled = false) ni se enfoca.
+                .then(if (enabled) Modifier.tvClickable(onLongClick = onLongClick, onClick = onClick) else Modifier.tvClickable(enabled = false) {}),
         ) {
             if (episode.stillUrl != null) {
                 AsyncImage(
@@ -573,6 +627,8 @@ private fun EpisodeCard(
 private fun SourcesPanel(
     state: DetailsUiState.Content,
     onPick: (StreamSource) -> Unit,
+    isBlocked: (StreamSource) -> Boolean,
+    onToggleSpanishOnly: () -> Unit,
 ) {
     val firstRequester = remember { FocusRequester() }
     val sources = (state.sources as? SourcesState.Ready)?.sources.orEmpty()
@@ -581,12 +637,20 @@ private fun SourcesPanel(
     val unavailable = (state.sources as? SourcesState.Ready)?.unavailable.orEmpty() +
         pending.associateWith { tr("Buscando…", "Searching…") }
     // Buscadores con fuentes + los que no han dado nada (lista vacía → cabecera con el motivo), en orden fijo.
-    val groups = remember(sources, unavailable) {
+    val spanishFirst = state.spanishFirst
+    val spanishOnly = state.spanishOnly
+    val groups = remember(sources, unavailable, spanishFirst, spanishOnly) {
         val byProvider = sources.groupBy { it.provider }
-        // Dentro de cada sección: primero la mejor calidad y, a igual calidad, la más grande.
+        // Dentro de cada sección: (con "Castellano primero") las de audio en español; luego la mejor calidad y, a
+        // igual calidad, la más grande.
         (byProvider.keys + unavailable.keys).distinct().sortedBy { order.indexOf(it) }.map { section ->
-            section to byProvider[section].orEmpty().sortedWith(
-                compareByDescending<StreamSource> { it.quality.rank }.thenByDescending { it.sizeBytes },
+            section to byProvider[section].orEmpty()
+                // "Solo en español": castellano o "Spanish"/"Dual" (puntuación ≥ 2); fuera latino dudoso y VOSE.
+                .filter { !spanishOnly || it.spanishAudioScore >= 2 }
+                .sortedWith(
+                compareByDescending<StreamSource> { if (spanishFirst) it.spanishAudioScore else 0 }
+                    .thenByDescending { it.quality.rank }
+                    .thenByDescending { it.sizeBytes },
             )
         }
     }
@@ -612,11 +676,16 @@ private fun SourcesPanel(
                 .background(Color(0xF2141414))
                 .padding(top = 32.dp, start = 24.dp, end = 24.dp),
         ) {
-            Text(
-                text = tr("Elegir fuente", "Choose a source"),
-                color = Color.White,
-                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = tr("Elegir fuente", "Choose a source"),
+                    color = Color.White,
+                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                    modifier = Modifier.weight(1f),
+                )
+                // ▲ desde la primera sección. Se recuerda para las siguientes fichas.
+                SpanishOnlyChip(enabled = spanishOnly, onClick = onToggleSpanishOnly)
+            }
             state.selectedEpisode?.takeIf { state.isSeries }?.let {
                 Text("${it.code} · ${it.title}", color = Grey, style = MaterialTheme.typography.bodyMedium)
             }
@@ -640,13 +709,14 @@ private fun SourcesPanel(
                                     count = list.size,
                                     cached = list.count { it.isCached },
                                     expanded = name in open,
-                                    note = unavailable[name].takeIf { list.isEmpty() },
+                                    note = unavailable[name].takeIf { list.isEmpty() }
+                                        ?: tr("Ninguna en español", "None in Spanish").takeIf { list.isEmpty() && spanishOnly },
                                     onClick = { if (list.isNotEmpty()) open = if (name in open) open - name else open + name },
                                     modifier = if (index == 0) Modifier.focusRequester(firstRequester) else Modifier,
                                 )
                             }
                             if (name in open) {
-                                items(list, key = { it.id }) { source -> SourceRow(source = source, onClick = { onPick(source) }) }
+                                items(list, key = { it.id }) { source -> SourceRow(source = source, blocked = isBlocked(source), onClick = { onPick(source) }) }
                             }
                         }
                     }
@@ -654,6 +724,29 @@ private fun SourcesPanel(
             }
         }
     }
+}
+
+/** Píldora "Solo en español" del panel de Fuentes (marcada = filtro puesto). */
+@Composable
+private fun SpanishOnlyChip(enabled: Boolean, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    Text(
+        text = if (enabled) "✓ " + tr("Solo en español", "Spanish only") else tr("Solo en español", "Spanish only"),
+        color = if (focused) Color.Black else Color.White,
+        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+        modifier = Modifier
+            .background(
+                when {
+                    focused -> Color.White
+                    enabled -> Color.White.copy(alpha = 0.22f)
+                    else -> Color.White.copy(alpha = 0.08f)
+                },
+                RoundedCornerShape(50),
+            )
+            .onFocusChanged { focused = it.isFocused }
+            .tvClickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 7.dp),
+    )
 }
 
 @Composable
@@ -683,7 +776,7 @@ private fun ProviderHeader(name: String, count: Int, cached: Int, expanded: Bool
 }
 
 @Composable
-private fun SourceRow(source: StreamSource, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun SourceRow(source: StreamSource, blocked: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     var focused by remember { mutableStateOf(false) }
     Row(
         modifier = modifier
@@ -695,8 +788,13 @@ private fun SourceRow(source: StreamSource, onClick: () -> Unit, modifier: Modif
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val fg = if (focused) Color.Black else Color.White
-        val sub = if (focused) Color.Black.copy(alpha = 0.7f) else Grey
+        // Bloqueada por Real-Debrid (ya se intentó): apagada y con el motivo, para no volver a elegirla.
+        val fg = when {
+            focused -> Color.Black
+            blocked -> Color.White.copy(alpha = 0.4f)
+            else -> Color.White
+        }
+        val sub = if (focused) Color.Black.copy(alpha = 0.7f) else Grey.copy(alpha = if (blocked) 0.5f else 1f)
         Box(Modifier.width(26.dp)) {
             if (source.isCached) Icon(AppIcons.Bolt, contentDescription = tr("En tu Real-Debrid", "In your Real-Debrid"), tint = if (focused) Color(0xFF0A8F3C) else Green)
         }
@@ -709,6 +807,7 @@ private fun SourceRow(source: StreamSource, onClick: () -> Unit, modifier: Modif
                     source.seeders?.let { append(" · ").append(it).append(" seeds") }
                     if (source.languages.isNotEmpty()) append(" · ").append(source.languages.joinToString("/"))
                     if (source.softwareDecode) append(" · AV1 (CPU)")
+                    if (blocked) append(tr(" · Bloqueada por Real-Debrid", " · Blocked by Real-Debrid"))
                 },
                 color = fg,
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),

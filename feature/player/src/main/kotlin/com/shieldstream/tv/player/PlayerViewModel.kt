@@ -20,6 +20,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.shieldstream.tv.domain.ResolveState
 import com.shieldstream.tv.domain.ResolveStreamUseCase
 import com.shieldstream.tv.domain.SelectedContentHolder
+import com.shieldstream.tv.domain.SkipSegments
+import com.shieldstream.tv.domain.SkipSegmentsRepository
 import com.shieldstream.tv.domain.SettingsRepository
 import com.shieldstream.tv.domain.SubtitleRepository
 import com.shieldstream.tv.domain.WatchProgressRepository
@@ -33,7 +35,10 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -53,6 +58,18 @@ sealed interface PlayerUiState {
 }
 
 /** Estado del apartado "Subtítulos externos" del panel. */
+/** Botón "Saltar intro" / "Saltar resumen" (OK salta a [targetMs]). */
+sealed interface SkipPromptUiState {
+    data object Hidden : SkipPromptUiState
+    data class Showing(val label: String, val targetMs: Long) : SkipPromptUiState
+}
+
+/** Tarjeta "Siguiente episodio" (series, al final del episodio). */
+sealed interface NextUpUiState {
+    data object Hidden : NextUpUiState
+    data class Showing(val label: String, val secondsLeft: Int) : NextUpUiState
+}
+
 sealed interface ExternalSubsState {
     data object Idle : ExternalSubsState
     data class Searching(val language: String) : ExternalSubsState
@@ -73,6 +90,7 @@ class PlayerViewModel @Inject constructor(
     private val watchProgress: WatchProgressRepository,
     private val subtitles: SubtitleRepository,
     private val trakt: TraktRepository,
+    private val skipSegmentsRepository: SkipSegmentsRepository,
 ) : ViewModel() {
 
     private val _player = MutableStateFlow<ExoPlayer?>(null)
@@ -100,6 +118,36 @@ class PlayerViewModel @Inject constructor(
 
     private val progressKey: String? = holder.progressKey.value
 
+    // --- Siguiente episodio y saltar intro --------------------------------------------------------------
+    // Tramos del episodio (IntroDB) → "Saltar intro/resumen" y el momento de la tarjeta "Siguiente episodio".
+    // Al pasar (cuenta atrás, OK o fin) se sale a la ficha pidiendo el siguiente, que ya lo tiene buscado.
+    private var segments: SkipSegments = SkipSegments.NONE
+    private var segmentsJob: Job? = null
+    private var prefetched = false
+    /** Posición en la que salió la tarjeta (-1 = no está). */
+    private var nextUpShownAt = -1L
+    private val _skipPrompt = MutableStateFlow<SkipPromptUiState>(SkipPromptUiState.Hidden)
+    val skipPrompt: StateFlow<SkipPromptUiState> = _skipPrompt.asStateFlow()
+    private val nextSnapshot = holder.next.value
+    private val _nextUp = MutableStateFlow<NextUpUiState>(NextUpUiState.Hidden)
+    val nextUp: StateFlow<NextUpUiState> = _nextUp.asStateFlow()
+    private val _goNext = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    /** La pantalla sale del reproductor (a la ficha, que arranca el siguiente). */
+    val goNext: SharedFlow<Unit> = _goNext.asSharedFlow()
+    private var nextUpDismissed = false
+    private var wentNext = false
+    /** Ajustes → "Siguiente episodio automático". */
+    private val autoNext: StateFlow<Boolean> = settings.autoNextEpisode.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    // --- Castellano de verdad ---------------------------------------------------------------------------
+    // La bandera 🇪🇸 o el nombre pueden mentir. Con "Castellano primero", si la fuente decía ser en español y sus
+    // pistas de audio (con idioma) no lo son, se prueba la siguiente en español de la cola. Si ninguna vale, se
+    // vuelve a la que sí se reproducía.
+    private val spanishFirst: StateFlow<Boolean> = settings.spanishFirst.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    private var spanishChecked = false
+    private var spanishSkips = 0
+    private var spanishFallback: Int? = null
+
     private var started = false
     private var resolvedUrl: String? = null
     /** Archivo que se está reproduciendo (para afinar qué subtítulo va sincronizado). */
@@ -113,6 +161,8 @@ class PlayerViewModel @Inject constructor(
     private var queueIndex = 0
     /** Ya salió imagen con esta fuente: a partir de ahí un error es un corte, no una fuente que no vale. */
     private var everPlayed = false
+    /** Ya se miró la duración de esta fuente (vídeo de error del addon, ver [checkErrorSlate]). */
+    private var slateChecked = false
     private var lastQueueError = ""
     private var allNotCached = true
     private var saverJob: Job? = null
@@ -152,7 +202,17 @@ class PlayerViewModel @Inject constructor(
             _uiState.value = PlayerUiState.Error(tr("Sin fuente seleccionada", "No source selected"))
             return
         }
+        loadSegments()
         playFrom(0)
+    }
+
+    /** Series: se piden a IntroDB mientras se resuelve la fuente (no retrasa el arranque). */
+    private fun loadSegments() {
+        val m = mediaSnapshot ?: return
+        val imdb = m.imdbId ?: return
+        val season = m.season ?: return
+        val episode = m.episode ?: return
+        viewModelScope.launch { segments = skipSegmentsRepository.episode(imdb, season, episode) }
     }
 
     /** Prueba la cola desde [from]; también la usa onPlayerError si una fuente falla antes de dar imagen. */
@@ -178,6 +238,8 @@ class PlayerViewModel @Inject constructor(
                         resolvedUrl = result.url
                         queueIndex = index
                         everPlayed = false
+                        slateChecked = false
+                        spanishChecked = false
                         // Diagnóstico: en packs de temporada el enlace del debrid acaba en el archivo elegido.
                         Log.i("PlayerVM", "Fuente ${index + 1}/${queue.size}: ${java.net.URLDecoder.decode(result.url.substringAfterLast('/'), "UTF-8").take(120)}")
                         playingFileName = source.fileName ?: source.title
@@ -186,6 +248,7 @@ class PlayerViewModel @Inject constructor(
                         if (resumeAt > 0) _notice.value = tr("Reanudando desde ${formatTime(resumeAt)}", "Resuming from ${formatTime(resumeAt)}")
                         _uiState.value = PlayerUiState.Playing
                         startProgressSaver()
+                        startSegmentsWatcher()
                         return@launch
                     }
                     is ResolveState.Failed -> {
@@ -196,6 +259,14 @@ class PlayerViewModel @Inject constructor(
                     }
                     else -> Unit
                 }
+            }
+            // Se había dejado una fuente que funcionaba por no traer castellano y las otras no van: se vuelve a ella.
+            spanishFallback?.let { back ->
+                spanishFallback = null
+                spanishSkips = MAX_SPANISH_SKIPS // no volver a saltar
+                _notice.value = tr("No hay otra fuente en castellano que funcione: vuelve la anterior", "No other working Spanish source: back to the previous one")
+                playFrom(back)
+                return@launch
             }
             // "Caché" solo si de verdad fallaron por eso; si no (addon caído, error 404…), el motivo real.
             _uiState.value = PlayerUiState.Error(
@@ -485,6 +556,179 @@ class PlayerViewModel @Inject constructor(
         return watchProgress.get(key)?.takeIf { it.isResumable }?.positionMs ?: 0L
     }
 
+    /**
+     * Cada medio segundo, mientras se reproduce: botón "Saltar intro/resumen" y tarjeta "Siguiente episodio".
+     *
+     * Siguiente episodio (lo que antes "no iba fino": la tarjeta salía con una estimación y cortaba finales):
+     *  - Con los créditos de IntroDB y sin escena poscréditos: la tarjeta sale al EMPEZAR los créditos y, tras
+     *    [NEXT_UP_COUNTDOWN_MS] de créditos, pasa sola (como Netflix). Si después de los créditos aún queda
+     *    contenido (>30 s sin marcar), se espera al final.
+     *  - Con escena poscréditos: la tarjeta sale al terminar la escena y pasa al acabar el archivo.
+     *  - Sin datos: la tarjeta sale en el último 1 % (mín. 20 s, como Nuvio) y pasa al acabar el archivo.
+     * La cuenta va por la posición del vídeo: en pausa se para, y si se va hacia atrás desaparece.
+     */
+    private fun startSegmentsWatcher() {
+        if (segmentsJob?.isActive == true) return
+        segmentsJob = viewModelScope.launch {
+            while (isActive) {
+                delay(500)
+                val p = _player.value ?: continue
+                val duration = p.duration
+                val position = p.currentPosition
+                if (duration <= 0) continue
+                updateSkipPrompt(position)
+                updateNextUp(position, duration)
+            }
+        }
+    }
+
+    private fun updateSkipPrompt(position: Long) {
+        val recap = segments.recap
+        val intro = segments.intro
+        val prompt = when {
+            recap != null && position in recap && recap.endMs - position > 2_000 ->
+                SkipPromptUiState.Showing(tr("Omitir resumen", "Skip recap"), recap.endMs)
+            intro != null && position in intro && intro.endMs - position > 2_000 ->
+                SkipPromptUiState.Showing(tr("Omitir intro", "Skip intro"), intro.endMs)
+            else -> SkipPromptUiState.Hidden
+        }
+        if (prompt != _skipPrompt.value) _skipPrompt.value = prompt
+    }
+
+    private fun updateNextUp(position: Long, duration: Long) {
+        val next = nextSnapshot
+        if (next == null || !autoNext.value || duration <= MIN_EPISODE_MS || wentNext) {
+            _nextUp.value = NextUpUiState.Hidden
+            return
+        }
+        val s = segments
+        val outro = s.outro?.takeIf { it.startMs < duration }
+        val post = s.postCredits?.takeIf { it.startMs < duration }
+        val outroEnd = outro?.endMs?.coerceAtMost(duration)
+        val (cardFrom, autoAt) = when {
+            post != null -> maxOf(post.endMs.coerceAtMost(duration), outro?.startMs ?: 0L) to duration
+            outro != null && duration - outroEnd!! <= AFTER_CREDITS_SLACK_MS ->
+                outro.startMs to minOf(outro.startMs + NEXT_UP_COUNTDOWN_MS, duration)
+            outro != null -> outro.startMs to duration
+            else -> duration - maxOf(duration / 100, NEXT_UP_FALLBACK_MIN_MS) to duration
+        }
+        if (position < cardFrom) {
+            nextUpDismissed = false // se ha ido hacia atrás: se puede volver a ofrecer
+            nextUpShownAt = -1L
+            _nextUp.value = NextUpUiState.Hidden
+            return
+        }
+        if (nextUpDismissed) {
+            _nextUp.value = NextUpUiState.Hidden
+            return
+        }
+        // La cuenta atrás siempre se ve entera: si se salta a mitad de los créditos, cuenta desde ahí (no se pasa de
+        // golpe al siguiente por buscar un punto).
+        if (nextUpShownAt < 0) nextUpShownAt = position
+        val goAt = if (autoAt < duration) minOf(maxOf(autoAt, nextUpShownAt + NEXT_UP_COUNTDOWN_MS), duration) else duration
+        // Cuenta atrás en los créditos (con datos): al llegar, siguiente. Al final del archivo lo hace STATE_ENDED.
+        if (goAt < duration && position >= goAt) {
+            playNextNow()
+            return
+        }
+        val secondsLeft = ((goAt - position + 999) / 1000).toInt().coerceAtLeast(0)
+        _nextUp.value = NextUpUiState.Showing(next.label, secondsLeft)
+        // Mientras sale la tarjeta, la ficha ya va buscando las fuentes del siguiente: al pasar, arranca antes.
+        if (!prefetched) {
+            prefetched = true
+            holder.prefetchNext(next)
+        }
+    }
+
+    /** OK con el botón "Saltar intro/resumen" a la vista. */
+    fun skipSegment() {
+        val prompt = _skipPrompt.value as? SkipPromptUiState.Showing ?: return
+        _player.value?.seekTo(prompt.targetMs)
+        _skipPrompt.value = SkipPromptUiState.Hidden
+    }
+
+    /**
+     * Una vez por fuente, con sus pistas ya conocidas. Solo si decía ser en español (puntuación > 0): si el usuario
+     * eligió a mano una en inglés, se respeta. Sin idioma en las pistas ("und") no se puede saber: se deja.
+     */
+    private fun checkSpanishAudio(player: ExoPlayer, tracks: Tracks) {
+        if (spanishChecked || !spanishFirst.value) return
+        val audio = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+            .flatMap { g -> (0 until g.length).map { g.getTrackFormat(it).language?.lowercase() } }
+        if (audio.isEmpty()) return // aún sin pistas
+        spanishChecked = true
+        val source = queueSnapshot.getOrNull(queueIndex) ?: return
+        if (source.spanishAudioScore == 0) return
+        val known = audio.filterNotNull().filter { it != "und" && it != "mul" }
+        if (known.isEmpty() || known.any { it.startsWith("es") || it == "spa" }) return
+        Log.i("PlayerVM", "Sin audio en castellano (${known.distinct()}): ${source.title.take(80)}")
+        val next = (queueIndex + 1 until queueSnapshot.size).firstOrNull { queueSnapshot[it].spanishAudioScore > 0 }
+        if (next == null || spanishSkips >= MAX_SPANISH_SKIPS) {
+            _notice.value = tr("Esta fuente no trae audio en castellano", "This source has no Spanish audio")
+            return
+        }
+        spanishSkips++
+        if (spanishFallback == null) spanishFallback = queueIndex
+        _notice.value = tr("Sin audio en castellano: probando otra fuente", "No Spanish audio: trying another source")
+        viewModelScope.launch {
+            saveProgress()
+            resumePositionMs = player.currentPosition
+            player.release()
+            if (_player.value === player) _player.value = null
+            resolvedUrl = null
+            playFrom(next)
+        }
+    }
+
+    /**
+     * Algunos addons (Comet de ElfHosted…) no fallan cuando no encuentran el archivo: devuelven un vídeo corto con el
+     * mensaje de error ("EPISODE_MATCH_NOT_FOUND") y se reproducía como si fuera el episodio. Si un enlace de addon
+     * dura menos de [SLATE_MAX_MS] pero la fuente dice pesar más de [SLATE_MIN_BYTES], es eso: se pasa a la
+     * siguiente fuente de la cola. Devuelve true si la ha saltado.
+     */
+    private fun checkErrorSlate(player: ExoPlayer): Boolean {
+        if (slateChecked) return false
+        val duration = player.duration
+        if (duration == C.TIME_UNSET || duration <= 0) return false
+        slateChecked = true
+        val source = queueSnapshot.getOrNull(queueIndex) ?: return false
+        if (source.resolveUrl == null || duration >= SLATE_MAX_MS || source.sizeBytes < SLATE_MIN_BYTES) return false
+        if (queueIndex + 1 >= queueSnapshot.size) return false
+        Log.i("PlayerVM", "Vídeo de error del addon (${duration / 1000} s, dice ${source.sizeBytes / 1_000_000} MB): ${source.title.take(80)}")
+        lastQueueError = tr("El addon no encontró el archivo de esta fuente.", "The addon couldn't find this source's file.")
+        allNotCached = false
+        _notice.value = tr("Esa fuente no tiene el episodio: probando otra", "That source doesn't have the episode: trying another")
+        viewModelScope.launch {
+            player.release()
+            if (_player.value === player) _player.value = null
+            resolvedUrl = null
+            playFrom(queueIndex + 1)
+        }
+        return true
+    }
+
+    /** OK en la tarjeta o fin del episodio. */
+    fun playNextNow() {
+        val next = nextSnapshot ?: return
+        if (wentNext) return
+        wentNext = true
+        // El actual queda visto (tick) aunque falten los créditos.
+        progressKey?.let { key ->
+            val duration = _player.value?.duration ?: 0L
+            if (duration > 0) watchProgress.save(key, duration, duration)
+        }
+        scrobble(ScrobbleAction.STOP, fraction = 1f)
+        holder.requestNext(next)
+        _nextUp.value = NextUpUiState.Hidden
+        _goNext.tryEmit(Unit)
+    }
+
+    /** Atrás con la tarjeta: se queda viendo los créditos. */
+    fun dismissNextUp() {
+        nextUpDismissed = true
+        _nextUp.value = NextUpUiState.Hidden
+    }
+
     /** Guarda el progreso cada 10 s mientras se reproduce (por si la Shield se apaga de golpe). */
     private fun startProgressSaver() {
         saverJob?.cancel()
@@ -548,12 +792,15 @@ class PlayerViewModel @Inject constructor(
         player.addListener(
             object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
+                    if (playbackState == Player.STATE_READY && checkErrorSlate(player)) return
                     // Terminado → visto (tick en Episodios) y la próxima vez empieza desde el principio.
                     if (playbackState == Player.STATE_ENDED) {
                         val key = progressKey ?: return
                         val duration = player.duration
                         if (duration > 0) watchProgress.save(key, duration, duration)
                         scrobble(ScrobbleAction.STOP, fraction = 1f)
+                        // Terminado del todo (con la tarjeta sin quitar y el ajuste activado): siguiente episodio.
+                        if (!nextUpDismissed && autoNext.value) playNextNow()
                     }
                 }
 
@@ -606,6 +853,7 @@ class PlayerViewModel @Inject constructor(
 
                 override fun onTracksChanged(tracks: Tracks) {
                     onReferenceTracks(player, tracks)
+                    checkSpanishAudio(player, tracks)
                 }
 
                 // Pista de referencia (oculta): se apuntan sus tiempos para la sincronización automática.
@@ -644,6 +892,21 @@ class PlayerViewModel @Inject constructor(
         const val TAG = "SubSync"
         /** Fuentes que se prueban de verdad antes de rendirse (las bloqueadas por RD no cuentan). */
         const val MAX_ATTEMPTS = 8
+        /** La tarjeta "Siguiente episodio" sale en los créditos (5 % final, entre 45 s y 2 min). */
+        /** Con créditos de IntroDB: cuánto se ven antes de pasar solo al siguiente. */
+        const val NEXT_UP_COUNTDOWN_MS = 10_000L
+        /** Sin datos: la tarjeta sale en el último 1 % del episodio, como mínimo 20 s antes del final. */
+        const val NEXT_UP_FALLBACK_MIN_MS = 20_000L
+        /** Si tras los créditos queda más que esto sin marcar, puede haber escena: se espera al final del archivo. */
+        const val AFTER_CREDITS_SLACK_MS = 30_000L
+        /** Fuentes que dicen ser en castellano y no lo son: como mucho se saltan estas antes de quedarse con una. */
+        const val MAX_SPANISH_SKIPS = 3
+        /** Vídeo de error de un addon: dura menos de esto… */
+        const val SLATE_MAX_MS = 4 * 60_000L
+        /** …y la fuente decía pesar más de esto (un episodio real tan corto no pesa tanto). */
+        const val SLATE_MIN_BYTES = 150_000_000L
+        /** Por debajo (avances, extras) no se ofrece. */
+        const val MIN_EPISODE_MS = 5 * 60_000L
     }
 
     private fun formatTime(ms: Long): String {

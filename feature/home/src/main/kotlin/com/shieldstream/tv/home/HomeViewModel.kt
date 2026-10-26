@@ -4,6 +4,8 @@ import com.shieldstream.tv.model.tr
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.shieldstream.tv.domain.CatalogRepository
+import com.shieldstream.tv.domain.SettingsRepository
+import com.shieldstream.tv.domain.MyListRepository
 import com.shieldstream.tv.domain.ContinueEntry
 import com.shieldstream.tv.domain.ContinueWatching
 import com.shieldstream.tv.domain.WatchProgressRepository
@@ -44,7 +46,17 @@ sealed interface HomeUiState {
 class HomeViewModel @Inject constructor(
     private val catalogRepository: CatalogRepository,
     private val watchProgress: WatchProgressRepository,
+    settings: SettingsRepository,
+    myList: MyListRepository,
+    profiles: com.shieldstream.tv.domain.ProfileRepository,
 ) : ViewModel() {
+
+    /** Perfil infantil: la portada solo enseña las categorías para niños (las filas ya vienen filtradas). */
+    val kidsProfile: Boolean = profiles.active.value.kids
+
+    /** Categorías ocultas en Ajustes (nombres). Aparte del UiState: cambiarlas no recarga las filas. */
+    val hiddenCategories: StateFlow<Set<String>> = settings.hiddenCategories
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
     /** Filas del catálogo (TMDB): se cargan una vez por pestaña. */
     private val _uiState = MutableStateFlow<HomeUiState>(HomeUiState.Loading)
@@ -53,11 +65,14 @@ class HomeViewModel @Inject constructor(
     private val continueRows = MutableStateFlow<List<CatalogRow>?>(null)
     private val filterFlow = MutableStateFlow<HomeFilter?>(null)
 
-    val uiState: StateFlow<HomeUiState> = combine(_uiState, continueRows) { catalog, continueRow ->
+    /** Fila "Mi lista" (0 o 1). null = aún calculándose (como "Seguir viendo", para no mover las filas). */
+    private val myListRows = MutableStateFlow<List<CatalogRow>?>(null)
+
+    val uiState: StateFlow<HomeUiState> = combine(_uiState, continueRows, myListRows) { catalog, continueRow, listRow ->
         when {
             catalog !is HomeUiState.Content -> catalog
-            continueRow == null -> HomeUiState.Loading
-            else -> catalog.copy(rows = continueRow + catalog.rows)
+            continueRow == null || listRow == null -> HomeUiState.Loading
+            else -> catalog.copy(rows = continueRow + listRow + catalog.rows)
         }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, HomeUiState.Loading)
 
@@ -72,6 +87,21 @@ class HomeViewModel @Inject constructor(
                 .distinctUntilChanged()
                 .mapLatest { entries -> listOfNotNull(buildContinueRow(entries)) }
                 .collect { continueRows.value = it }
+        }
+        // "Mi lista": en su pestaña (películas o series); se rehace al añadir o quitar desde la ficha.
+        viewModelScope.launch {
+            combine(filterFlow.filterNotNull(), myList.entries) { filter, entries ->
+                entries.filter {
+                    when (filter) {
+                        HomeFilter.ALL -> true
+                        HomeFilter.MOVIES -> it.type == MediaType.MOVIE
+                        HomeFilter.TV -> it.type == MediaType.TV
+                    }
+                }.take(MY_LIST_MAX)
+            }
+                .distinctUntilChanged()
+                .mapLatest { entries -> listOfNotNull(buildMyListRow(entries)) }
+                .collect { myListRows.value = it }
         }
     }
 
@@ -106,6 +136,17 @@ class HomeViewModel @Inject constructor(
         )
     }
 
+    private suspend fun buildMyListRow(entries: List<com.shieldstream.tv.domain.MyListEntry>): CatalogRow? {
+        if (entries.isEmpty()) return null
+        val items = coroutineScope {
+            entries.map { e ->
+                async { withTimeoutOrNull(5_000) { runCatching { catalogRepository.getItem(e.type, e.id) }.getOrNull() } }
+            }.awaitAll().filterNotNull()
+        }
+        if (items.isEmpty()) return null
+        return CatalogRow(id = MY_LIST_ROW_ID, title = tr("Mi lista", "My list"), items = items)
+    }
+
     private fun labelFor(entry: ContinueEntry): String {
         val remaining = formatRemaining(entry.progress.remainingMs)
         return if (entry.type == MediaType.TV) tr("T${entry.season}:E${entry.episode} · $remaining", "S${entry.season}:E${entry.episode} · $remaining") else tr("Quedan $remaining", "$remaining left")
@@ -124,6 +165,8 @@ class HomeViewModel @Inject constructor(
 
     private companion object {
         const val CONTINUE_ROW_ID = "continue_watching"
+        const val MY_LIST_ROW_ID = "my_list"
+        const val MY_LIST_MAX = 40
     }
 
     /**

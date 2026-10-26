@@ -28,6 +28,9 @@ interface RealDebridRepository {
     /** Selecciona los archivos (ids de RD, base 1) a descargar en la nube. */
     suspend fun selectFiles(torrentId: String, fileIds: List<Int>)
 
+    /** Real-Debrid ya rechazó este torrent (451, derechos de autor) en esta sesión: en Fuentes se marca. */
+    fun isBlocked(infoHash: String): Boolean = false
+
     /** Borra un torrent de la librería. Nunca lanza: es limpieza. */
     suspend fun deleteTorrent(torrentId: String)
 

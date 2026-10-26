@@ -43,13 +43,19 @@ enum class ApiService(
         usedFor = tr("Más subtítulos externos", "More external subtitles"),
         required = false,
     ),
-    /** Reserva de fuentes si Torrentio falla o no da nada. La "clave" es la URL del manifiesto de tu configuración. */
+    /**
+     * Cualquier addon de Stremio (AIOStreams, Comet, MediaFusion…). La "clave" es la URL del manifiesto.
+     * Antes se llamaba "AIOStreams" y en el foro se entendía que solo valía ese addon.
+     */
     AIOSTREAMS(
-        title = "AIOStreams",
-        keyName = tr("URL del manifiesto (o de otro addon)", "Manifest URL (or another addon's)"),
+        title = tr("Addon de Stremio", "Stremio addon"),
+        keyName = tr("URL del manifiesto del addon", "Addon manifest URL"),
         whereToGet = "aiostreams.elfhosted.com/stremio/configure",
         url = "https://aiostreams.elfhosted.com/stremio/configure",
-        usedFor = tr("Más fuentes: AIOStreams u otro addon de Stremio", "More sources: AIOStreams or another Stremio addon"),
+        usedFor = tr(
+            "Más fuentes: AIOStreams o cualquier addon de Stremio (pega la URL de su manifiesto; varios, separados por espacios)",
+            "More sources: AIOStreams or any Stremio addon (paste its manifest URL; several, separated by spaces)",
+        ),
         required = false,
     ),
     // Debrids a través de Torrentio (ver DebridService).

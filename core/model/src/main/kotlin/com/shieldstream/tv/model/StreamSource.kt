@@ -38,4 +38,40 @@ data class StreamSource(
         }
 
     val isHdr: Boolean get() = hdrType != HdrType.SDR
+
+    /** Audio en español: 2 = castellano, 1 = latino, 0 = no consta. Ver [SpanishAudio]. */
+    val spanishAudioScore: Int get() = SpanishAudio.score(this)
+}
+
+/**
+ * ¿Trae audio en español? Por la bandera que pone Torrentio ([StreamSource.languages]) o, si no la hay (muy
+ * habitual en películas antiguas), por el nombre de la release: SPANISH, CASTELLANO, ESPAÑOL, ESP, SPA, DUAL…
+ */
+object SpanishAudio {
+    /** Lo pone la release (webs españolas): lo más fiable. */
+    private val castellano = Regex("""(?i)(\bcastellano\b|espa[ñn]ol|\besp\b|\bspa\b|\bcast\b)""")
+    /** "Spanish" / "Dual": suele ser castellano, pero a veces latino o (dual en anime) japonés + inglés. */
+    private val spanishWord = Regex("""(?i)(\bspanish\b|\bdual\b)""")
+    private val latino = Regex("""(?i)(\blatino\b|\blat\b|\blatam\b)""")
+    /** Versión original con subtítulos: NO trae audio en español. */
+    private val subsOnly = Regex("""(?i)(\bvose\b|\bvos\b|\bsubs?\.?\s*(esp|spa|spanish)\b)""")
+
+    /**
+     * 3 = castellano en el nombre · 2 = "Spanish"/"Dual" o bandera 🇪🇸 con pocos idiomas · 1 = latino, o 🇪🇸 entre
+     * muchos idiomas (suele ser la lista de subtítulos de un remux: la bandera sola engaña) · 0 = nada.
+     * Aun así puede mentir: el reproductor lo comprueba con las pistas de audio reales (PlayerViewModel).
+     */
+    fun score(source: StreamSource): Int {
+        val text = source.title + " " + source.fileName.orEmpty()
+        val flagEs = "ES" in source.languages
+        return when {
+            castellano.containsMatchIn(text) -> 3
+            subsOnly.containsMatchIn(text) && !spanishWord.containsMatchIn(text) -> 0
+            spanishWord.containsMatchIn(text) -> 2
+            flagEs && source.languages.size <= 3 -> 2
+            flagEs -> 1
+            "LAT" in source.languages || latino.containsMatchIn(text) -> 1
+            else -> 0
+        }
+    }
 }

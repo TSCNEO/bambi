@@ -4,11 +4,14 @@ import com.shieldstream.tv.model.tr
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.shieldstream.tv.domain.CatalogRepository
+import com.shieldstream.tv.domain.SettingsRepository
 import com.shieldstream.tv.model.CatalogItem
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -25,7 +28,15 @@ sealed interface SearchUiState {
 @HiltViewModel
 class SearchViewModel @Inject constructor(
     private val catalogRepository: CatalogRepository,
+    private val settings: SettingsRepository,
 ) : ViewModel() {
+
+    /** Distribución del teclado en pantalla (se recuerda): QWERTY o alfabético. */
+    val qwerty: StateFlow<Boolean> = settings.searchQwerty.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    fun toggleKeyboardLayout() {
+        viewModelScope.launch { settings.setSearchQwerty(!qwerty.value) }
+    }
 
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
@@ -49,7 +60,8 @@ class SearchViewModel @Inject constructor(
 
     fun clear() = setQuery("")
 
-    private fun setQuery(value: String) {
+    /** Texto completo (teclado del sistema / dictado por voz). */
+    fun setQuery(value: String) {
         _query.value = value
         searchJob?.cancel()
         val q = value.trim()

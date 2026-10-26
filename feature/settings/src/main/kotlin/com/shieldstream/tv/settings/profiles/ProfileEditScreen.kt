@@ -28,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
@@ -72,6 +73,8 @@ fun ProfileEditScreen(
         return
     }
     val nameRequester = remember { FocusRequester() }
+    // ▼ desde las opciones (infantil / PIN) → Guardar: por cercanía iba a Cancelar y se perdía lo editado.
+    val saveRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     LaunchedEffect(Unit) {
         runCatching { nameRequester.requestFocus() }
@@ -83,6 +86,10 @@ fun ProfileEditScreen(
         }
     }
     val profile = editing.profile
+    // Poner PIN: se escribe dos veces (como en Netflix); si no coinciden, se vuelve a empezar.
+    var creatingPin by remember { mutableStateOf(false) }
+    var firstPin by remember { mutableStateOf<String?>(null) }
+    var pinError by remember { mutableStateOf<String?>(null) }
 
     Box(Modifier.fillMaxSize().background(ProfileBackground)) {
         // La Shield mide 960 dp de ancho: todo con márgenes, nada de anchos fijos grandes.
@@ -93,7 +100,7 @@ fun ProfileEditScreen(
                 fontSize = 34.sp,
                 fontWeight = FontWeight.Bold,
             )
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(18.dp))
             Row {
                 ProfileAvatar(initial = profile.initial, avatar = profile.avatar, size = 150.dp)
                 Spacer(Modifier.width(36.dp))
@@ -123,9 +130,37 @@ fun ProfileEditScreen(
                         onDisconnect = viewModel::disconnectTrakt,
                         onFocusLost = viewModel::cancelConfirmations,
                     )
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OptionChip(
+                            text = if (profile.kids) tr("Perfil infantil: Sí", "Kids profile: On") else tr("Perfil infantil: No", "Kids profile: Off"),
+                            highlighted = profile.kids,
+                            onClick = { viewModel.setKids(!profile.kids) },
+                            modifier = Modifier.focusProperties { down = saveRequester },
+                        )
+                        OptionChip(
+                            text = when {
+                                !profile.locked -> tr("Poner PIN", "Set PIN")
+                                editing.confirmRemovePin -> tr("Pulsa otra vez para quitar el PIN", "Press again to remove the PIN")
+                                else -> tr("PIN puesto · OK para quitarlo", "PIN set · OK to remove")
+                            },
+                            highlighted = profile.locked,
+                            onClick = {
+                                if (profile.locked) {
+                                    viewModel.removePin()
+                                } else {
+                                    firstPin = null
+                                    pinError = null
+                                    creatingPin = true
+                                }
+                            },
+                            onFocusLost = viewModel::cancelConfirmations,
+                            modifier = Modifier.focusProperties { down = saveRequester },
+                        )
+                    }
                 }
             }
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(24.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 TvButton(
                     text = tr("Guardar", "Save"),
@@ -133,6 +168,7 @@ fun ProfileEditScreen(
                         viewModel.save()
                         onDone()
                     },
+                    modifier = Modifier.focusRequester(saveRequester),
                 )
                 if (editing.canDelete) {
                     TvButton(
@@ -148,6 +184,37 @@ fun ProfileEditScreen(
                 TvButton(text = tr("Cancelar", "Cancel"), onClick = onDone)
             }
         }
+    }
+
+    if (creatingPin) {
+        PinDialog(
+            title = if (firstPin == null) tr("Nuevo PIN", "New PIN") else tr("Repite el PIN", "Repeat the PIN"),
+            subtitle = tr("4 cifras para entrar en ${profile.name.ifBlank { "este perfil" }}", "4 digits to open ${profile.name.ifBlank { "this profile" }}"),
+            error = pinError,
+            onPin = { pin ->
+                val first = firstPin
+                when {
+                    first == null -> {
+                        firstPin = pin
+                        pinError = null
+                    }
+                    first == pin -> {
+                        viewModel.setPin(pin)
+                        creatingPin = false
+                        firstPin = null
+                    }
+                    else -> {
+                        firstPin = null
+                        pinError = tr("No coinciden: escribe el PIN nuevo otra vez", "They don't match: enter the new PIN again")
+                    }
+                }
+            },
+            onDismiss = {
+                creatingPin = false
+                firstPin = null
+                pinError = null
+            },
+        )
     }
 }
 
@@ -292,4 +359,37 @@ private fun TraktCard(
             Text(subtitle, color = if (state.confirmDisconnect) Color(0xFFF5B83D) else ProfileMuted, fontSize = 15.sp)
         }
     }
+}
+
+/** Opción pequeña del perfil (infantil, PIN): píldora que se ilumina con el foco. */
+@Composable
+private fun OptionChip(
+    text: String,
+    highlighted: Boolean,
+    onClick: () -> Unit,
+    onFocusLost: () -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
+    var focused by remember { mutableStateOf(false) }
+    Text(
+        text,
+        color = if (focused) Color.Black else Color.White,
+        fontSize = 16.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = modifier
+            .background(
+                when {
+                    focused -> Color.White
+                    highlighted -> Color.White.copy(alpha = 0.2f)
+                    else -> Color.White.copy(alpha = 0.08f)
+                },
+                RoundedCornerShape(50),
+            )
+            .onFocusChanged {
+                focused = it.isFocused
+                if (!it.isFocused) onFocusLost()
+            }
+            .tvClickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 10.dp),
+    )
 }

@@ -67,18 +67,21 @@ fun PosterCard(
             .zIndex(if (focused) 1f else 0f)
             .width(width)
             .aspectRatio(2f / 3f)
+            // Bambi 1.0.6: el foco (clickable) va ANTES que la escala. Si la escala va delante, el rectángulo que
+            // la tarjeta pide "traer a la vista" crece con la animación (1.0 → 1.1) y la lista de filas lo sigue
+            // en vertical: el "saltito" de las carátulas en todas las filas menos la primera.
+            .onFocusChanged {
+                focused = it.isFocused
+                if (it.isFocused) onFocused()
+            }
+            .tvClickable(onLongClick = onLongClick, onClick = onClick)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
             .clip(CardShape)
             .background(Color(0xFF232327))
-            .then(if (focused) Modifier.border(2.dp, Color.White, CardShape) else Modifier)
-            .onFocusChanged {
-                focused = it.isFocused
-                if (it.isFocused) onFocused()
-            }
-            .tvClickable(onLongClick = onLongClick, onClick = onClick),
+            .then(if (focused) Modifier.border(2.dp, Color.White, CardShape) else Modifier),
     ) {
         if (item.posterUrl != null) {
             AsyncImage(

@@ -12,8 +12,14 @@ data class Profile(
     val name: String,
     val avatar: Int,
     val traktUser: String? = null,
+    /** PIN de 4 cifras para entrar (hash, nunca el PIN): null = sin PIN. Ver [ProfilePin]. */
+    val pinHash: String? = null,
+    /** Perfil infantil: Inicio, categorías y búsqueda solo con contenido para niños. */
+    val kids: Boolean = false,
 ) {
     val initial: String get() = name.trim().firstOrNull()?.uppercase() ?: "?"
+
+    val locked: Boolean get() = pinHash != null
 
     companion object {
         /** Como Netflix: hasta 5 perfiles. */
@@ -25,6 +31,21 @@ data class Profile(
          */
         const val DEFAULT_ID = "default"
     }
+}
+
+/**
+ * PIN de perfil (como el de Netflix o Nuvio): 4 cifras. Se guarda solo un hash con el id del perfil, así el mismo
+ * PIN en dos perfiles no da el mismo valor y en el archivo de ajustes no se lee el PIN.
+ */
+object ProfilePin {
+    const val LENGTH = 4
+
+    fun hash(profileId: String, pin: String): String {
+        val bytes = java.security.MessageDigest.getInstance("SHA-256").digest("bambi-pin:$profileId:$pin".toByteArray())
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    fun matches(profile: Profile, pin: String): Boolean = profile.pinHash == null || profile.pinHash == hash(profile.id, pin)
 }
 
 /** Colores de los avatares: [primero, segundo] del degradado. */

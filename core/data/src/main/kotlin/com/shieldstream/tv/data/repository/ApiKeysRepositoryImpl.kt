@@ -54,8 +54,19 @@ class ApiKeysRepositoryImpl @Inject constructor(
             when (service) {
                 ApiService.REAL_DEBRID -> checkRealDebrid(key)
                 ApiService.TMDB -> {
-                    tmdb.trendingAll(key)
-                    KeyCheck.Valid()
+                    // Error habitual: pegar el "token de lectura de la API" (v4, un JWT larguísimo que empieza por
+                    // eyJ) en vez de la "clave de la API" (v3, 32 caracteres). Se explica en vez de "clave no válida".
+                    if (key.startsWith("eyJ") && key.length > 60) {
+                        KeyCheck.Invalid(
+                            tr(
+                                "Eso es el «token de lectura» (v4). Bambi usa la «Clave de la API» (v3): 32 letras y números, en la misma página de TMDB (Ajustes → API).",
+                                "That's the \"read access token\" (v4). Bambi uses the \"API Key\" (v3): 32 letters and numbers, on the same TMDB page (Settings → API).",
+                            ),
+                        )
+                    } else {
+                        tmdb.trendingAll(key)
+                        KeyCheck.Valid()
+                    }
                 }
                 ApiService.SUBDL -> checkSubDl(key)
                 ApiService.AIOSTREAMS -> checkAioStreams(key)
@@ -92,11 +103,20 @@ class ApiKeysRepositoryImpl @Inject constructor(
 
     /** Búsqueda mínima (El club de la lucha): con clave mala SubDL responde 401/403 o status=false. */
     /** Se piden las fuentes de una película conocida: si responde con JSON válido, la URL vale. */
+    /** Uno o varios addons (URLs separadas por espacios): se prueba cada uno con Cadena perpetua. */
     private suspend fun checkAioStreams(url: String): KeyCheck {
-        val base = aioStreamBase(url)
-            ?: return KeyCheck.Invalid(tr("Pega la URL del manifiesto (termina en /manifest.json)", "Paste the manifest URL (ends in /manifest.json)"))
-        val n = torrentioApi.streamsAt("$base/stream/movie/tt0111161.json").streams.size
-        return KeyCheck.Valid(tr("Conectado · $n fuentes de prueba", "Connected · $n test sources"))
+        val bases = aioStreamBases(url)
+        if (bases.isEmpty()) {
+            return KeyCheck.Invalid(tr("Pega la URL del manifiesto (termina en /manifest.json). Varios: separados por espacios.", "Paste the manifest URL (ends in /manifest.json). Several: separated by spaces."))
+        }
+        val counts = bases.map { base -> runCatching { torrentioApi.streamsAt("$base/stream/movie/tt0111161.json").streams.size }.getOrNull() }
+        val failed = counts.count { it == null }
+        if (failed == bases.size) return KeyCheck.Invalid(tr("Ningún addon responde", "No addon is responding"))
+        val total = counts.filterNotNull().sum()
+        return KeyCheck.Valid(
+            if (bases.size == 1) tr("Conectado · $total fuentes de prueba", "Connected · $total test sources")
+            else tr("${bases.size - failed} de ${bases.size} addons · $total fuentes de prueba", "${bases.size - failed} of ${bases.size} addons · $total test sources"),
+        )
     }
 
     private fun checkSubDl(key: String): KeyCheck {

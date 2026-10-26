@@ -18,6 +18,12 @@ import com.shieldstream.tv.data.repository.ProfileRepositoryImpl
 import com.shieldstream.tv.data.repository.TraktRepositoryImpl
 import com.shieldstream.tv.domain.ProfileRepository
 import com.shieldstream.tv.domain.TraktRepository
+import com.shieldstream.tv.data.update.UpdateRepositoryImpl
+import com.shieldstream.tv.domain.UpdateRepository
+import com.shieldstream.tv.data.skip.IntroDbRepository
+import com.shieldstream.tv.domain.SkipSegmentsRepository
+import com.shieldstream.tv.data.repository.MyListRepositoryImpl
+import com.shieldstream.tv.domain.MyListRepository
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -63,4 +69,16 @@ abstract class DataModule {
     @Binds
     @Singleton
     abstract fun bindTraktRepository(impl: TraktRepositoryImpl): TraktRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindUpdateRepository(impl: UpdateRepositoryImpl): UpdateRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindSkipSegmentsRepository(impl: IntroDbRepository): SkipSegmentsRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindMyListRepository(impl: MyListRepositoryImpl): MyListRepository
 }

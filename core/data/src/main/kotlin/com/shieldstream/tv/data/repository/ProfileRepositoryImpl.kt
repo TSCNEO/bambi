@@ -74,11 +74,12 @@ class ProfileRepositoryImpl @Inject constructor(
         val updated = list.filterNot { it.id == id }
         store(updated)
         // Lo suyo: progreso y cuenta de Trakt.
-        val progressPrefs = WatchProgressRepositoryImpl.prefsNameFor(id)
-        if (Build.VERSION.SDK_INT >= 24) {
-            context.deleteSharedPreferences(progressPrefs)
-        } else {
-            context.getSharedPreferences(progressPrefs, Context.MODE_PRIVATE).edit().clear().apply()
+        for (name in listOf(WatchProgressRepositoryImpl.prefsNameFor(id), MyListRepositoryImpl.prefsNameFor(id))) {
+            if (Build.VERSION.SDK_INT >= 24) {
+                context.deleteSharedPreferences(name)
+            } else {
+                context.getSharedPreferences(name, Context.MODE_PRIVATE).edit().clear().apply()
+            }
         }
         tokens.setSecret(TraktSession.storeKey(id), null)
         if (_active.value.id == id) select(updated.first().id)
@@ -101,11 +102,19 @@ class ProfileRepositoryImpl @Inject constructor(
     }
 
     @Serializable
-    private data class StoredProfile(val id: String, val name: String, val avatar: Int, val traktUser: String? = null) {
-        fun toProfile() = Profile(id, name, avatar, traktUser)
+    private data class StoredProfile(
+        val id: String,
+        val name: String,
+        val avatar: Int,
+        val traktUser: String? = null,
+        // Campos nuevos con valor por defecto: los perfiles guardados antes se leen igual.
+        val pinHash: String? = null,
+        val kids: Boolean = false,
+    ) {
+        fun toProfile() = Profile(id, name, avatar, traktUser, pinHash, kids)
 
         companion object {
-            fun from(p: Profile) = StoredProfile(p.id, p.name, p.avatar, p.traktUser)
+            fun from(p: Profile) = StoredProfile(p.id, p.name, p.avatar, p.traktUser, p.pinHash, p.kids)
         }
     }
 

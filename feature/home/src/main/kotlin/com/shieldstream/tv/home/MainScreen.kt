@@ -24,7 +24,7 @@ import com.shieldstream.tv.ui.component.TopTab
 import com.shieldstream.tv.ui.component.onBackKey
 
 /**
- * Contenedor principal: menú superior (🔍 · Inicio · Series · Películas · ⚙) + sección activa.
+ * Contenedor principal: menú superior (🔍 · Inicio · Series · Películas · Mi lista · ⚙) + sección activa.
  * Las categorías (Dramas, Anime…) se abren encima; Atrás vuelve. Atrás desde el menú sale de la app.
  */
 @Composable
@@ -53,7 +53,7 @@ fun MainScreen(
             onSelect = { selected ->
                 if (selected != tab) {
                     tab = selected
-                    focusMenuAfterSwitch = selected != TopTab.SEARCH
+                    focusMenuAfterSwitch = selected != TopTab.SEARCH && selected != TopTab.MY_LIST
                 }
             },
             onSettings = onOpenSettings,
@@ -77,12 +77,17 @@ fun MainScreen(
                 onItemClick = onOpenItem,
                 onBack = { category = null },
             )
-            tab == TopTab.SEARCH -> {
+            // Buscar y Mi lista: menú arriba fijo y la pantalla debajo. Atrás (fuera del menú) → menú.
+            tab == TopTab.SEARCH || tab == TopTab.MY_LIST -> {
                 var topBarFocused by remember { mutableStateOf(false) }
                 Column(Modifier.fillMaxSize().onBackKey(enabled = !topBarFocused) { focusTopBar() }) {
                     topBar(Modifier.onFocusChanged { topBarFocused = it.hasFocus })
                     Box(Modifier.fillMaxWidth().weight(1f)) {
-                        SearchScreen(onItemClick = onOpenItem)
+                        if (tab == TopTab.SEARCH) {
+                            SearchScreen(onItemClick = onOpenItem)
+                        } else {
+                            saveable.SaveableStateProvider("tab_${tab.name}") { MyListScreen(onItemClick = onOpenItem) }
+                        }
                     }
                 }
             }

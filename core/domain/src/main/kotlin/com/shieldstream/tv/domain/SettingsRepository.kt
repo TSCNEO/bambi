@@ -25,6 +25,26 @@ interface SettingsRepository {
     val language: AppLanguage
     suspend fun setLanguage(language: AppLanguage)
 
+    /** "Castellano primero": las fuentes con audio en español arriba. Por defecto, sí si la app está en español. */
+    val spanishFirst: Flow<Boolean>
+    suspend fun setSpanishFirst(enabled: Boolean)
+
+    /** Panel de Fuentes: enseñar solo las que dicen traer audio en español (botón del propio panel). */
+    val spanishOnlySources: Flow<Boolean>
+    suspend fun setSpanishOnlySources(enabled: Boolean)
+
+    /** Series: tarjeta "Siguiente episodio" en los créditos y paso automático al terminar (por defecto, sí). */
+    val autoNextEpisode: Flow<Boolean>
+    suspend fun setAutoNextEpisode(enabled: Boolean)
+
+    /** Teclado de Buscar: true = QWERTY; false = alfabético (ABC…), el de siempre. */
+    val searchQwerty: Flow<Boolean>
+    suspend fun setSearchQwerty(enabled: Boolean)
+
+    /** Botones de categoría del Inicio OCULTOS (por nombre de Category). Vacío = se ven todos. */
+    val hiddenCategories: Flow<Set<String>>
+    suspend fun setHiddenCategories(names: Set<String>)
+
     /** Buscadores de fuentes activados (por defecto, todos). */
     val sourceProviders: Flow<Set<SourceProvider>>
     suspend fun setSourceProviders(providers: Set<SourceProvider>)

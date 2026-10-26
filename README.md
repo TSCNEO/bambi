@@ -12,7 +12,8 @@ y una interfaz pensada para el mando: perfiles, "Seguir viendo" sincronizado con
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.1-7F52FF?logo=kotlin&logoColor=white)
 ![Jetpack Compose](https://img.shields.io/badge/Jetpack%20Compose-TV-4285F4?logo=jetpackcompose&logoColor=white)
 ![Media3](https://img.shields.io/badge/Media3-1.6-3DDC84?logo=android&logoColor=white)
-![Version](https://img.shields.io/badge/versi%C3%B3n-1.0.5-E50914)
+![Version](https://img.shields.io/badge/versi%C3%B3n-1.0.6-E50914)
+![Licencia](https://img.shields.io/badge/licencia-GPL--3.0-blue)
 
 <img src="docs/screenshots/02-inicio.jpg" alt="Inicio de Bambi" width="900" />
 
@@ -38,6 +39,7 @@ y una interfaz pensada para el mando: perfiles, "Seguir viendo" sincronizado con
 - [Compilar desde el código](#compilar-desde-el-código)
 - [Cómo está hecho](#cómo-está-hecho)
 - [Créditos](#créditos)
+- [Licencia](#licencia)
 - [Aviso legal](#aviso-legal)
 
 ---
@@ -71,6 +73,8 @@ Todo pensado para el mando: el foco siempre sabe dónde está, nada de ratones n
 - Hasta **5 perfiles**, cada uno con su nombre, su color y su propio **"Seguir viendo"**, sus vistos y su progreso.
 - **Administrar perfiles**: añadir, renombrar, cambiar el color o eliminar (con confirmación).
 - El avatar del perfil activo está siempre arriba a la derecha: un OK y cambias de perfil.
+- **PIN de 4 cifras** por perfil: se pide para entrar en él y para editarlo.
+- **Perfil infantil**: Inicio, portada, categorías y búsqueda solo con contenido para niños.
 - Al actualizar desde una versión sin perfiles, todo tu progreso pasa a un perfil "Principal": no se pierde nada.
 
 <p align="center"><img src="docs/screenshots/12-administrar-perfiles.jpg" alt="Administrar perfiles" width="640" /></p>
@@ -88,6 +92,7 @@ aparece un código (y un QR), lo escribes en el móvil y listo.
 - **Vistos sincronizados**: los ticks de los episodios salen también de tu historial de Trakt.
 - Al enlazar, lo que ya habías visto en esa tele **se sube** a Trakt.
 - **Quitar de "Seguir viendo"** también lo quita de Trakt, para que no reaparezca en la otra tele.
+- **"Mi lista"** es tu *watchlist* de Trakt: lo que añadas en una tele sale en la otra.
 - Si Trakt no responde, la app sigue funcionando con su progreso local.
 
 ### Inicio y "Seguir viendo"
@@ -101,7 +106,10 @@ aparece un código (y un QR), lo escribes en el móvil y listo.
 
 - **Portada** estilo Netflix con logos de los títulos, edad recomendada, nota y etiquetas ("Recién llegada",
   "La película del momento"…).
-- Pestañas **Inicio · Series · Películas** y **categorías** (Dramas, Thrillers, Estados de ánimo, Policiacas…).
+- Pestañas **Inicio · Series · Películas · Mi lista** y **categorías** (Dramas, Thrillers, Estados de ánimo,
+  Policiacas…). En Ajustes eliges qué categorías se ven.
+- **Mi lista**: guarda películas y series desde su ficha; tiene su propia pestaña (con filtro Todo / Series /
+  Películas) y una fila en el Inicio.
 - Filas de **Tendencias**, **Top 10 de hoy** y muchas más.
 - **Seguir viendo** con barra de progreso y lo que te queda ("T1:E6 · 14 min"). Mantén OK para quitar un título.
 - Desplazamiento suave y precompilado: la app se instala con un perfil de arranque para que vaya fluida desde el
@@ -119,6 +127,8 @@ aparece un código (y un QR), lo escribes en el móvil y listo.
 - Logo, valoración, duración y las **etiquetas de calidad** reales de lo que hay disponible (4K, Dolby Vision, HDR10).
 - **Reanudar** donde lo dejaste o **Desde el principio**.
 - Series con **temporadas y episodios**, ticks de vistos y barra de progreso en cada episodio.
+- **Marcar como visto** una película o una temporada entera, o un episodio manteniendo OK sobre él.
+- Botón **Mi lista** para guardarla.
 - Al volver de una ficha, el foco sigue en el título donde estabas.
 
 ### Fuentes
@@ -132,10 +142,14 @@ aparece un código (y un QR), lo escribes en el móvil y listo.
 
 - Varios buscadores **a la vez**, cada uno en su sección:
   - **Torrentio**, el de siempre en Stremio;
+  - **Peerflix**, con mucho contenido en castellano (DonTorrent, MejorTorrent, Wolfmax4k…);
   - **The Pirate Bay**, que agrupa los buscadores propios de Bambi: The Pirate Bay, Knaben (1337x, Nyaa…), Nyaa (anime) y Comet;
   - **AIOStreams** o cualquier otro addon de Stremio, pegando la URL de su manifiesto.
 - **Resultados progresivos**: cada sección aparece en cuanto responde su buscador ("Buscando…" en las demás).
 - Ordenadas por **calidad y tamaño**, con idioma, *seeds* y el nombre de la release.
+- **Castellano primero** (Ajustes) sube arriba las fuentes con audio en español, y el botón **Solo en español**
+  del panel esconde las demás.
+- **Anime**: además de "S01E05" busca por numeración absoluta ("One Piece - 894"), como se llaman sus releases.
 - **⚡ = en caché**: se reproduce al instante. Lo que un buscador sabe que está en caché se marca también en los demás.
 - **"Reproducir" elige solo**: prueba las fuentes en orden hasta que una funciona. Se salta las que Real-Debrid
   bloquea o que no son vídeo, y frena si Real-Debrid pide calma.
@@ -163,7 +177,11 @@ aparece un código (y un QR), lo escribes en el móvil y listo.
   referencia los subtítulos del propio archivo.
 - **Reanuda** donde lo dejaste, guarda el progreso solo y, si pulsas Home, libera el decodificador y el modo
   HDR/DV de la tele y vuelve al mismo punto.
-- Si una fuente falla al abrir, pasa sola a la siguiente; si falla a mitad, reintenta en el mismo punto.
+- **Omitir intro / resumen** y tarjeta de **siguiente episodio** en los créditos (datos de IntroDB), con paso
+  automático al siguiente que se puede desactivar en Ajustes.
+- Con "Castellano primero", si una fuente decía ser en español y su audio no lo es, prueba otra.
+- Si una fuente falla al abrir, pasa sola a la siguiente; si falla a mitad, reintenta en el mismo punto. Si un
+  addon devuelve un vídeo con su mensaje de error en lugar del episodio, también pasa a la siguiente.
 - MKV con pistas que Media3 no sabe leer (p. ej. subtítulos comprimidos con zlib): se ignora solo esa pista y se
   reproduce el resto.
 
@@ -173,7 +191,8 @@ aparece un código (y un QR), lo escribes en el móvil y listo.
 
 <p align="center"><img src="docs/screenshots/11-buscar.jpg" alt="Buscar" width="760" /></p>
 
-Teclado en pantalla pensado para el mando, resultados al momento y, sin escribir nada, **lo más visto hoy**.
+Teclado en pantalla pensado para el mando (ABC o QWERTY, con Ñ) o el teclado del sistema, resultados al momento
+y, sin escribir nada, **lo más visto hoy**.
 
 ### Ajustes y guía de configuración
 
@@ -196,11 +215,19 @@ Teclado en pantalla pensado para el mando, resultados al momento y, sin escribir
 
 ## Instalación
 
-1. Descarga el APK de la última versión en [**Releases**](../../releases).
+1. Descarga **`Bambi.apk`** de la última versión en [**Releases**](../../releases). Este enlace apunta siempre a
+   la última: `https://github.com/grodri99/bambi/releases/latest/download/Bambi.apk`
 2. Instálalo en la Shield, o en cualquier Android TV con Android 5.0 o superior:
-   - con **adb**: `adb connect IP_DE_LA_TELE` y luego `adb install Bambi-1.0.5.apk`;
+   - con **adb**: `adb connect IP_DE_LA_TELE` y luego `adb install Bambi.apk`;
    - o con una app tipo *Downloader* / *Send Files to TV*.
 3. Ábrelo: la **guía de configuración** te lleva paso a paso.
+
+### Actualizaciones
+
+Desde la **1.0.6**, Bambi mira en GitHub si hay una versión nueva (al abrirla, como mucho cada 6 h, o a mano en
+Ajustes → "Buscar actualizaciones"). Si la hay, avisa con las novedades y se descarga e instala desde el propio
+aviso, sin perder perfiles ni progreso. La primera vez Android pide permitir "Instalar apps desconocidas" para
+Bambi: el aviso lleva a esa pantalla.
 
 > Recomendado: una **NVIDIA Shield TV** (2019 o Pro). Es donde se ha probado todo, incluido Dolby Vision.
 
@@ -324,10 +351,22 @@ flowchart LR
 - Catálogo e imágenes: **[TMDB](https://www.themoviedb.org)**. *This product uses the TMDB API but is not
   endorsed or certified by TMDB.*
 - Sincronización: **[Trakt](https://trakt.tv)**.
-- Fuentes: **Torrentio**, **Comet**, **AIOStreams** y los buscadores públicos citados.
+- Fuentes: **Torrentio**, **Peerflix**, **Comet**, **AIOStreams** y los buscadores públicos citados.
+- Saltar intro y créditos: **[IntroDB](https://introdb.app)** (base de datos colaborativa).
+- Ideas y lógica de varias funciones (saltar intro, siguiente episodio…) inspiradas en
+  **[NuvioTV](https://github.com/NuvioMedia/NuvioTV)** (GPL-3.0).
 - Subtítulos: **OpenSubtitles**, **Podnapisi**, **SubDL**.
 - Reproducción: **[AndroidX Media3](https://github.com/androidx/media)** y **[dav1d](https://code.videolan.org/videolan/dav1d)**.
   El lector de MKV tolerante es una copia modificada de `MatroskaExtractor` de Media3 (Apache 2.0).
+
+---
+
+## Licencia
+
+Bambi es **software libre**: puedes usarlo, estudiarlo, modificarlo y compartirlo bajo los términos de la
+**GNU General Public License v3.0** ([LICENSE](LICENSE)). Si distribuyes una versión modificada, tiene que seguir
+siendo GPL-3.0 y con su código disponible. Las partes de terceros conservan su licencia (el lector de MKV basado en
+Media3 es Apache 2.0, compatible con la GPL-3.0).
 
 ---
 

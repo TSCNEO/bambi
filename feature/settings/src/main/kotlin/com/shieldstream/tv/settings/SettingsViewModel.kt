@@ -177,6 +177,43 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { settings.setDebridService(service) }
     }
 
+    /** "Castellano primero" (aparte del UiState principal: no cambia nada más de la pantalla). */
+    val spanishFirst: StateFlow<Boolean> = settings.spanishFirst
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    fun setSpanishFirst(enabled: Boolean) {
+        viewModelScope.launch { settings.setSpanishFirst(enabled) }
+    }
+
+    /** Series: siguiente episodio automático. */
+    val autoNextEpisode: StateFlow<Boolean> = settings.autoNextEpisode
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    fun setAutoNextEpisode(enabled: Boolean) {
+        viewModelScope.launch { settings.setAutoNextEpisode(enabled) }
+    }
+
+    /** Categorías del Inicio ocultas (nombres). */
+    val hiddenCategories: StateFlow<Set<String>> = settings.hiddenCategories
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    /** Muestra u oculta una categoría. Nunca se ocultan todas: la última visible no se deja quitar. */
+    fun toggleCategory(category: com.shieldstream.tv.model.Category) {
+        val hidden = hiddenCategories.value
+        val next = if (category.name in hidden) {
+            hidden - category.name
+        } else {
+            val visibleLeft = com.shieldstream.tv.model.Category.entries.count { it.name !in hidden && it != category }
+            if (visibleLeft == 0) return
+            hidden + category.name
+        }
+        viewModelScope.launch { settings.setHiddenCategories(next) }
+    }
+
+    fun showAllCategories() {
+        viewModelScope.launch { settings.setHiddenCategories(emptySet()) }
+    }
+
     fun setSeekThumbnails(enabled: Boolean) {
         viewModelScope.launch { settings.setSeekThumbnails(enabled) }
     }

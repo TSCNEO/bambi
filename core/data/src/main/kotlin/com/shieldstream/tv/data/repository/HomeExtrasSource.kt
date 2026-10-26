@@ -66,6 +66,57 @@ class HomeExtrasSource @Inject constructor(
         }
     }
 
+    /**
+     * Portada del perfil infantil: lo más popular para niños (películas de animación/familia hasta PG en EE. UU.
+     * y series del género Infantil), no las tendencias generales. Sin guardar por semanas: va en la caché del Inicio.
+     */
+    suspend fun kidsFeatured(filter: HomeFilter): List<FeaturedItem> = coroutineScope {
+        val movieParams = mapOf(
+            "with_genres" to "16|10751",
+            "certification_country" to "US",
+            "certification.lte" to "PG",
+            "include_adult" to "false",
+        )
+        val tvParams = mapOf("with_genres" to "10762", "include_adult" to "false")
+        val popular = mapOf("sort_by" to "popularity.desc")
+        val acclaimed = mapOf("sort_by" to "vote_average.desc", "vote_count.gte" to "300")
+        val wantMovies = filter != HomeFilter.TV
+        val wantTv = filter != HomeFilter.MOVIES
+        val movies = async { if (wantMovies) runCatching { tmdb.discoverMovieQuery(key, movieParams + popular).results }.getOrDefault(emptyList()) else emptyList() }
+        val shows = async { if (wantTv) runCatching { tmdb.discoverTvQuery(key, tvParams + popular).results }.getOrDefault(emptyList()) else emptyList() }
+        val bestMovies = async { if (wantMovies) runCatching { tmdb.discoverMovieQuery(key, movieParams + acclaimed).results }.getOrDefault(emptyList()) else emptyList() }
+        val m = movies.await().filter { it.backdrop_path != null }.map { Pick(MediaType.MOVIE, it.id, FeaturedBadge.POPULAR) }
+        val s = shows.await().filter { it.backdrop_path != null }.map { Pick(MediaType.TV, it.id, FeaturedBadge.POPULAR) }
+        val best = bestMovies.await().filter { it.backdrop_path != null }.map { Pick(MediaType.MOVIE, it.id, FeaturedBadge.ACCLAIMED) }
+        val picks = ArrayList<Pick>()
+        fun add(p: Pick?, badge: FeaturedBadge) {
+            if (p != null && picks.none { it.type == p.type && it.id == p.id }) picks += p.copy(badge = badge)
+        }
+        fun MutableList<Pick>.next() = firstOrNull { p -> picks.none { it.type == p.type && it.id == p.id } }
+        val mm = m.toMutableList(); val ss = s.toMutableList()
+        when (filter) {
+            HomeFilter.ALL -> {
+                add(mm.next(), FeaturedBadge.POPULAR)
+                add(ss.next(), FeaturedBadge.SERIES_NOW)
+                add(mm.next(), FeaturedBadge.MOVIE_NOW)
+                add(best.toMutableList().next(), FeaturedBadge.ACCLAIMED)
+                add(ss.next(), FeaturedBadge.RISING)
+            }
+            HomeFilter.MOVIES -> {
+                add(mm.next(), FeaturedBadge.POPULAR)
+                add(mm.next(), FeaturedBadge.MOVIE_NOW)
+                add(best.toMutableList().next(), FeaturedBadge.ACCLAIMED)
+                add(mm.next(), FeaturedBadge.RISING)
+            }
+            HomeFilter.TV -> {
+                add(ss.next(), FeaturedBadge.POPULAR)
+                add(ss.next(), FeaturedBadge.SERIES_NOW)
+                add(ss.next(), FeaturedBadge.RISING)
+            }
+        }
+        picks.map { pick -> async { runCatching { loadFeatured(pick) }.getOrNull() } }.awaitAll().filterNotNull()
+    }
+
     /** Tendencias de la semana (TMDB) → hasta 5 destacados con su "motivo". */
     private suspend fun choosePicks(filter: HomeFilter): List<Pick> {
         val trending = (tmdb.trendingAllWeek(key, 1).results + runCatching { tmdb.trendingAllWeek(key, 2).results }.getOrDefault(emptyList()))
@@ -198,6 +249,8 @@ class HomeExtrasSource @Inject constructor(
         val genres: String? = null,
         val keyword: String? = null,
         val language: String? = null,
+        /** País de origen (ES, KR…): with_origin_country. */
+        val country: String? = null,
     )
 
     private data class Spec(val movie: Query?, val tv: Query?)
@@ -221,6 +274,16 @@ class HomeExtrasSource @Inject constructor(
         Category.ASTROLOGY -> Spec(Query(keyword = "astrology"), Query(keyword = "astrology"))
         Category.STANDUP -> Spec(Query(keyword = "stand-up comedy"), Query(keyword = "stand-up comedy"))
         Category.MOODS -> Spec(null, null) // filas propias (ver moodRows)
+        Category.HORROR -> Spec(Query("27"), Query(keyword = "horror")) // TMDB no tiene "terror" en series
+        Category.SPANISH -> Spec(Query(country = "ES"), Query(country = "ES"))
+        Category.ADVENTURE -> Spec(Query("12"), Query("10759"))
+        Category.MYSTERY -> Spec(Query("9648"), Query("9648"))
+        Category.KIDS -> Spec(Query("16,10751"), Query("10762"))
+        Category.KOREAN -> Spec(Query(country = "KR"), Query(country = "KR"))
+        Category.TRUE_CRIME -> Spec(Query("99,80"), Query("99,80"))
+        Category.WAR_HISTORY -> Spec(Query("10752|36"), Query("10768"))
+        Category.WESTERN -> Spec(Query("37"), Query("37"))
+        Category.MUSIC -> Spec(Query("10402"), null)
     }
 
     suspend fun categoryRows(category: Category, filter: HomeFilter): List<CatalogRow> = coroutineScope {
@@ -303,6 +366,7 @@ class HomeExtrasSource @Inject constructor(
         p["page"] = page.toString()
         q.genres?.let { p["with_genres"] = it }
         q.language?.let { p["with_original_language"] = it }
+        q.country?.let { p["with_origin_country"] = it }
         q.keyword?.let { p["with_keywords"] = (keywordId(it) ?: return null).toString() }
         p.putAll(extra)
         return p

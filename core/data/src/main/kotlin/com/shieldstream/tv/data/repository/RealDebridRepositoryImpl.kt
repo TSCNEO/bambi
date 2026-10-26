@@ -60,6 +60,8 @@ class RealDebridRepositoryImpl @Inject constructor(
     private val addPacing = Mutex()
     @Volatile private var lastAddAt = 0L
 
+    override fun isBlocked(infoHash: String): Boolean = infoHash.lowercase() in blockedHashes
+
     private suspend fun addMagnet(magnet: String, attempt: Int): String {
         val hash = BTIH.find(magnet)?.groupValues?.get(1)?.lowercase()
         if (hash != null && hash in blockedHashes) {

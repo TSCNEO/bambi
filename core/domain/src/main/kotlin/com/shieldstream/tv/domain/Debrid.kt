@@ -1,5 +1,7 @@
 package com.shieldstream.tv.domain
 
+import com.shieldstream.tv.model.tr
+
 /**
  * Servicios debrid que Bambi sabe usar.
  *
@@ -59,8 +61,14 @@ interface TorrentioLinkResolver {
  */
 enum class SourceProvider(val title: String, val baseUrl: String?, val torrentioStyle: Boolean) {
     TORRENTIO("Torrentio", "https://torrentio.strem.fun", true),
-    // KnightCrawler (ElfHosted), ThePirateBay+ y Peerflix se probaron en la Shield (24-oct-2026) y no responden
-    // como addon (HTML, dominio inexistente, sin respuesta): fuera. Cualquier otro va por el addon propio.
+    /**
+     * Addon de Stremio en español: DonTorrent, MejorTorrent, Wolfmax4k… (castellano de verdad) y algo en inglés.
+     * Ahora responde en addon.peerflix.mov (26-oct-2026; el 24-oct no). Sin clave: da infoHash y se resuelve con
+     * Real-Debrid en la Shield, como Torrentio. Con otros debrids no (su configuración no es la de Torrentio).
+     */
+    PEERFLIX("Peerflix", "https://addon.peerflix.mov", false),
+    // KnightCrawler (ElfHosted) y ThePirateBay+ se probaron en la Shield (24-oct-2026) y no responden como addon
+    // (HTML, dominio inexistente): fuera. Cualquier otro va por el addon propio.
     /** Buscadores propios de Bambi (como los scrapers de Kodi): consultan la web directamente. Solo Real-Debrid. */
     /** Metabuscador (1337x, TPB, Nyaa, TorrentGalaxy…): el equivalente a los scrapers de CocoScrapers en uno. */
     KNABEN("Knaben", "https://api.knaben.org", false),
@@ -73,12 +81,12 @@ enum class SourceProvider(val title: String, val baseUrl: String?, val torrentio
     /** Como en CocoScrapers: Comet con tu token de Real-Debrid (sale hacia comet.elfhosted.com). */
     COMET("Comet", "https://comet.elfhosted.com", false),
     /** Addon propio del usuario (AIOStreams, Comet, MediaFusion…): su URL en Ajustes → Otros servicios. */
-    AIOSTREAMS("AIOStreams", null, false),
+    AIOSTREAMS(tr("Addon de Stremio", "Stremio addon"), null, false),
     ;
 
     /** Sección en Fuentes y en Ajustes: los buscadores propios van todos juntos bajo "The Pirate Bay". */
     val section: String get() = when (this) {
-        TORRENTIO, AIOSTREAMS -> title
+        TORRENTIO, PEERFLIX, AIOSTREAMS -> title
         else -> "The Pirate Bay"
     }
 }

@@ -28,6 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -290,6 +291,20 @@ internal fun CategoryChips(
     modifier: Modifier = Modifier,
 ) {
     if (categories.isEmpty()) return
+    // Si cambian las categorías (Ajustes → Categorías del Inicio), la fila empieza de cero con la lista nueva.
+    key(categories) { CategoryChipsRow(categories, onOpen, requester, upRequester, onFocused, onDown, modifier) }
+}
+
+@Composable
+private fun CategoryChipsRow(
+    categories: List<Category>,
+    onOpen: (Category) -> Unit,
+    requester: FocusRequester,
+    upRequester: FocusRequester,
+    onFocused: () -> Unit,
+    onDown: () -> Unit,
+    modifier: Modifier,
+) {
     val state = rememberLoopingRowState(categories.size)
     var focusedVirtual by rememberSaveable { mutableIntStateOf(state.firstVisibleItemIndex) }
     ProvidePivotScroll(leading = 28.dp) {

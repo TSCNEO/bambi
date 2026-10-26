@@ -49,6 +49,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import com.shieldstream.tv.settings.update.UpdateCard
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -222,13 +223,18 @@ private fun SettingsList(
             items(SourceProvider.entries.distinctBy { it.section }) { p ->
                 ProviderCard(p, enabled = SourceProvider.entries.filter { it.section == p.section }.all { it in providers }, onClick = { onToggleProvider(p) })
             }
+            item { SpanishFirstCard() }
+            item { SectionTitle(tr("Inicio", "Home")) }
+            item { HomeCategoriesCard() }
             item { SectionTitle("Idioma · Language") }
             item { LanguageCard(current = state.language, onApply = onLanguage) }
             item { SectionTitle(tr("Reproducción", "Playback")) }
             item { SeekModeCard(thumbnails = state.seekThumbnails, onChange = onSeekMode) }
+            item { AutoNextCard() }
             item { BufferCard(seconds = state.bufferSeconds, onChange = onBuffer) }
             item { SectionTitle(tr("Acerca de", "About")) }
             item { AboutCard() }
+            item { UpdateCard() }
             item { SetupGuideCard(onClick = onOpenSetup) }
         }
     }
@@ -328,7 +334,7 @@ private fun ServiceLogo(service: ApiService) {
         ApiService.OFFCLOUD -> "OC" to Color(0xFF1FA58E)
         ApiService.TMDB -> "TM" to Color(0xFF01B4E4)
         ApiService.SUBDL -> "SD" to Color(0xFFF08A24)
-        ApiService.AIOSTREAMS -> "AIO" to Color(0xFF8E5CF7)
+        ApiService.AIOSTREAMS -> "+" to Color(0xFF8E5CF7)
     }
     Box(
         contentAlignment = Alignment.Center,
@@ -454,6 +460,97 @@ internal fun DebridSelectorCard(active: DebridService, onChange: (DebridService)
 /**
  * Cómo funcionan ◀▶ en el reproductor. OK alterna; ◀ elige "Miniaturas" y ▶ "Saltos de 10 s".
  */
+/**
+ * "Castellano primero": en Fuentes y al pulsar Reproducir, las releases con audio en español van delante (tras las
+ * que están en caché). Se detecta por la bandera de Torrentio o por el nombre (SPANISH, CASTELLANO, DUAL…).
+ */
+@Composable
+private fun SpanishFirstCard(viewModel: SettingsViewModel = hiltViewModel()) {
+    val enabled by viewModel.spanishFirst.collectAsStateWithLifecycle()
+    FocusCard(
+        onClick = { viewModel.setSpanishFirst(!enabled) },
+        modifier = Modifier.onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when (event.key) {
+                Key.DirectionLeft -> { viewModel.setSpanishFirst(true); true }
+                Key.DirectionRight -> { viewModel.setSpanishFirst(false); true }
+                else -> false
+            }
+        },
+    ) { _ ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Castellano primero", "Spanish audio first"),
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                )
+                Text(
+                    tr(
+                        "Las fuentes con audio en español van delante (también al pulsar Reproducir). Se reconocen por la bandera o por el nombre: SPANISH, CASTELLANO, DUAL…",
+                        "Sources with Spanish audio go first (also when you press Play). Detected by flag or name: SPANISH, CASTELLANO, DUAL…",
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
+                )
+            }
+            Spacer(Modifier.width(24.dp))
+            Row(
+                Modifier
+                    .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(50))
+                    .padding(4.dp),
+            ) {
+                SegmentOption(tr("Sí", "On"), selected = enabled)
+                SegmentOption(tr("No", "Off"), selected = !enabled)
+            }
+        }
+    }
+}
+
+/** Series: "Siguiente episodio" en los créditos y paso automático al terminar. ◀ = Sí, ▶ = No, OK cambia. */
+@Composable
+private fun AutoNextCard(viewModel: SettingsViewModel = hiltViewModel()) {
+    val enabled by viewModel.autoNextEpisode.collectAsStateWithLifecycle()
+    FocusCard(
+        onClick = { viewModel.setAutoNextEpisode(!enabled) },
+        modifier = Modifier.onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when (event.key) {
+                Key.DirectionLeft -> { viewModel.setAutoNextEpisode(true); true }
+                Key.DirectionRight -> { viewModel.setAutoNextEpisode(false); true }
+                else -> false
+            }
+        },
+    ) { _ ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Siguiente episodio automático", "Autoplay next episode"),
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                )
+                Text(
+                    tr(
+                        "Series: en los créditos sale \"Siguiente episodio\" (OK lo pone ya) y, al terminar el episodio, empieza el siguiente.",
+                        "Shows: during the credits \"Next episode\" appears (OK plays it now) and, when the episode ends, the next one starts.",
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
+                )
+            }
+            Spacer(Modifier.width(24.dp))
+            Row(
+                Modifier
+                    .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(50))
+                    .padding(4.dp),
+            ) {
+                SegmentOption(tr("Sí", "On"), selected = enabled)
+                SegmentOption(tr("No", "Off"), selected = !enabled)
+            }
+        }
+    }
+}
+
 @Composable
 private fun SeekModeCard(thumbnails: Boolean, onChange: (Boolean) -> Unit) {
     FocusCard(
@@ -564,11 +661,12 @@ private fun ProviderCard(provider: SourceProvider, enabled: Boolean, onClick: ()
 
 private fun providerNote(p: SourceProvider): String = when (p) {
     SourceProvider.TORRENTIO -> tr("El buscador principal, como en Stremio.", "The main finder, like in Stremio.")
+    SourceProvider.PEERFLIX -> tr("Torrents en castellano de webs españolas (DonTorrent, MejorTorrent, Wolfmax4k…) y algunos en inglés. Solo con Real-Debrid.", "Spanish torrents from Spanish sites (DonTorrent, MejorTorrent, Wolfmax4k…) plus some in English. Real-Debrid only.")
     SourceProvider.KNABEN -> tr("Buscadores propios de Bambi, juntos: The Pirate Bay, Knaben (1337x, Nyaa…), Nyaa (anime) y Comet. Solo con Real-Debrid.", "Bambi's own finders together: The Pirate Bay, Knaben (1337x, Nyaa…), Nyaa (anime) and Comet. Real-Debrid only.")
     SourceProvider.THEPIRATEBAY -> tr("Buscadores propios de Bambi, juntos: The Pirate Bay, Knaben (1337x, Nyaa…), Nyaa (anime) y Comet. Solo con Real-Debrid.", "Bambi's own finders together: The Pirate Bay, Knaben (1337x, Nyaa…), Nyaa (anime) and Comet. Real-Debrid only.")
     SourceProvider.NYAA -> tr("Buscador propio de anime (CocoScrapers). Solo con Real-Debrid.", "Own anime finder (CocoScrapers). Real-Debrid only.")
     SourceProvider.COMET -> tr("Comet con tu token de Real-Debrid (se envía a comet.elfhosted.com, como en Umbrella).", "Comet with your Real-Debrid token (sent to comet.elfhosted.com, like Umbrella).")
-    SourceProvider.AIOSTREAMS -> tr("AIOStreams, Comet, MediaFusion… Pega la URL de su manifiesto en Otros servicios → AIOStreams.", "AIOStreams, Comet, MediaFusion… Paste its manifest URL in Other services → AIOStreams.")
+    SourceProvider.AIOSTREAMS -> tr("Cualquier addon de Stremio (AIOStreams, Comet, MediaFusion…). Pega la URL de su manifiesto en Otros servicios → Addon de Stremio.", "Any Stremio addon (AIOStreams, Comet, MediaFusion…). Paste its manifest URL in Other services → Stremio addon.")
 }
 
 @Composable

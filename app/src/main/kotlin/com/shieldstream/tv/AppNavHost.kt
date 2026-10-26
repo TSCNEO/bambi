@@ -22,6 +22,7 @@ import com.shieldstream.tv.settings.profiles.ProfileEditViewModel
 import com.shieldstream.tv.settings.profiles.ProfilePickerScreen
 import com.shieldstream.tv.settings.profiles.ProfilesViewModel
 import com.shieldstream.tv.settings.profiles.TraktConnectScreen
+import com.shieldstream.tv.settings.update.UpdatePrompt
 
 @Composable
 fun AppNavHost(holder: SelectedContentHolder) {
@@ -48,6 +49,7 @@ fun AppNavHost(holder: SelectedContentHolder) {
                 onEdit = { id -> if (entry.isVisible()) navController.navigate("profile_edit/$id") },
                 onAdd = { if (entry.isVisible()) navController.navigate("profile_edit/${ProfileEditViewModel.NEW}") },
             )
+            UpdatePrompt()
         }
         composable("profile_edit/{id}") { entry ->
             ProfileEditScreen(
@@ -82,6 +84,8 @@ fun AppNavHost(holder: SelectedContentHolder) {
                 },
                 onOpenSettings = { navController.navigate("settings") },
             )
+            // Versión nueva en GitHub: el aviso sale aquí y en "¿Quién está viendo?", nunca durante la reproducción.
+            UpdatePrompt()
         }
         composable("details") { entry ->
             DetailsScreen(

@@ -1,5 +1,13 @@
 package com.shieldstream.tv.player
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.foundation.border
+import androidx.compose.ui.text.style.TextOverflow
 import com.shieldstream.tv.model.tr
 import android.view.View
 import androidx.activity.compose.BackHandler
@@ -88,6 +96,10 @@ fun PlayerScreen(
     val subtitleTiming by viewModel.subtitleTiming.collectAsStateWithLifecycle()
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
     val thumbnailsEnabled by viewModel.seekThumbnails.collectAsStateWithLifecycle()
+    val nextUp by viewModel.nextUp.collectAsStateWithLifecycle()
+    val skipPrompt by viewModel.skipPrompt.collectAsStateWithLifecycle()
+    // "Siguiente episodio": se sale a la ficha, que busca las fuentes del siguiente y lo pone.
+    LaunchedEffect(Unit) { viewModel.goNext.collect { onBack() } }
     LaunchedEffect(notice) {
         if (notice != null) {
             delay(3_500)
@@ -178,11 +190,36 @@ fun PlayerScreen(
     // Al cerrar el panel de pistas el foco vuelve al reproductor (si no, el D-pad no haría nada).
     LaunchedEffect(tracksOpen) { if (!tracksOpen) runCatching { focusRequester.requestFocus() } }
 
+    // "Omitir intro/resumen": 10 s a la vista (como en Nuvio) y luego solo con los controles abiertos. Mientras no se
+    // ve, OK vuelve a ser pausa.
+    val skipTarget = (skipPrompt as? SkipPromptUiState.Showing)?.targetMs
+    var skipExpired by remember { mutableStateOf(false) }
+    LaunchedEffect(skipTarget) {
+        skipExpired = false
+        if (skipTarget != null) {
+            delay(SKIP_VISIBLE_MS)
+            skipExpired = true
+        }
+    }
+    val skipVisible = skipPrompt is SkipPromptUiState.Showing && (!skipExpired || controlsVisible) &&
+        nextUp !is NextUpUiState.Showing
+
     fun handleKey(event: KeyEvent): Boolean {
         if (event.type != KeyEventType.KeyDown) return false
         // Con el panel abierto, el D-pad mueve el foco entre pistas: no se intercepta.
         if (tracksOpen) return false
         val p = player ?: return false
+        // Tarjeta "Siguiente episodio": OK = ya (Atrás la quita: ver onBackKey abajo).
+        val okKey = event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter
+        if (okKey && nextUp is NextUpUiState.Showing && scrubMs == null && !syncOpen) {
+            viewModel.playNextNow()
+            return true
+        }
+        // "Saltar intro / resumen" a la vista: OK salta (como en Netflix); para pausar, Play/Pausa del mando.
+        if (okKey && skipVisible && scrubMs == null && !syncOpen) {
+            viewModel.skipSegment()
+            return true
+        }
         if (syncOpen) {
             return when (event.key) {
                 Key.DirectionLeft -> { viewModel.adjustSubtitleOffset(-100); true }
@@ -280,6 +317,9 @@ fun PlayerScreen(
             }
             .onBackKey(enabled = tracksOpen) { tracksOpen = false }
             .onBackKey(enabled = syncOpen) { syncOpen = false }
+            .onBackKey(enabled = nextUp is NextUpUiState.Showing && !tracksOpen && !syncOpen && scrubMs == null) {
+                viewModel.dismissNextUp()
+            }
             .focusRequester(focusRequester)
             .onKeyEvent(::handleKey)
             .focusable(),
@@ -369,11 +409,57 @@ fun PlayerScreen(
             }
         }
 
+        // Abajo a la derecha, compactos (estilo Netflix): suben un poco si están los controles para no tapar la barra.
+        val pillBottom by animateDpAsState(if (controlsVisible) 116.dp else 48.dp, label = "pillBottom")
+        val pillModifier = Modifier.align(Alignment.BottomEnd).padding(end = 48.dp, bottom = pillBottom)
+        if (state == PlayerUiState.Playing && !tracksOpen) {
+            (nextUp as? NextUpUiState.Showing)?.let { next ->
+                // Relleno = cuenta atrás de los últimos 10 s (al llenarse, pasa solo).
+                val target = if (next.secondsLeft <= NEXT_FILL_SECONDS) 1f - next.secondsLeft / NEXT_FILL_SECONDS.toFloat() else 0f
+                val fill by animateFloatAsState(target, animationSpec = tween(500, easing = LinearEasing), label = "nextFill")
+                PlayerPill(tr("Siguiente episodio", "Next episode"), AppIcons.SkipNext, fill, pillModifier)
+            }
+            if (skipVisible) {
+                (skipPrompt as? SkipPromptUiState.Showing)?.let { skip ->
+                    PlayerPill(skip.label, AppIcons.FastForward, null, pillModifier)
+                }
+            }
+        }
+
         when (val s = state) {
             is PlayerUiState.Resolving -> StatusOverlay(title = title, message = s.message, loading = true)
             is PlayerUiState.Error -> StatusOverlay(title = title, message = s.message, loading = false)
             PlayerUiState.Playing -> Unit
         }
+    }
+}
+
+/** Cuántos segundos del final se ven como relleno en "Siguiente episodio". */
+private const val NEXT_FILL_SECONDS = 10
+/** Tiempo que "Omitir intro" se ve sin abrir los controles. */
+private const val SKIP_VISIBLE_MS = 10_000L
+
+/**
+ * Botón compacto del reproductor ("Omitir intro", "Siguiente episodio"): píldora oscura con borde blanco.
+ * [fill] (0..1) pinta por detrás el avance de la cuenta atrás. Se activa con OK (ver handleKey).
+ */
+@Composable
+private fun PlayerPill(text: String, icon: ImageVector, fill: Float?, modifier: Modifier = Modifier) {
+    val shape = RoundedCornerShape(50)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .clip(shape)
+            .background(Color.Black.copy(alpha = 0.62f))
+            .drawBehind {
+                if (fill != null && fill > 0f) drawRect(Color.White.copy(alpha = 0.28f), size = size.copy(width = size.width * fill))
+            }
+            .border(1.5.dp, Color.White.copy(alpha = 0.9f), shape)
+            .padding(start = 14.dp, end = 18.dp, top = 8.dp, bottom = 8.dp),
+    ) {
+        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text, color = Color.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold))
     }
 }
 

@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import com.shieldstream.tv.domain.SelectedContentHolder
 import com.shieldstream.tv.domain.TraktRepository
+import com.shieldstream.tv.domain.UpdateRepository
 import com.shieldstream.tv.ui.theme.ShieldStreamTheme
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -17,6 +18,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var trakt: TraktRepository
+
+    @Inject
+    lateinit var updates: UpdateRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -31,5 +35,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         trakt.syncActive()
+        // Versión nueva en GitHub: como mucho una consulta cada 6 h; el aviso sale en el Inicio / perfiles.
+        updates.check(manual = false)
     }
 }

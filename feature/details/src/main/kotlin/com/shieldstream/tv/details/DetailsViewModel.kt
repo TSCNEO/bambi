@@ -6,8 +6,13 @@ import androidx.lifecycle.viewModelScope
 import com.shieldstream.tv.domain.CatalogRepository
 import com.shieldstream.tv.domain.PrioritizeSourcesUseCase
 import com.shieldstream.tv.domain.RealDebridRepository
+import com.shieldstream.tv.domain.MyListRepository
+import com.shieldstream.tv.domain.NextEpisode
 import com.shieldstream.tv.domain.SelectedContentHolder
 import com.shieldstream.tv.domain.WatchProgressRepository
+import com.shieldstream.tv.domain.SettingsRepository
+import com.shieldstream.tv.domain.TraktRepository
+import kotlinx.coroutines.flow.first
 import com.shieldstream.tv.media.DisplayCapabilityDetector
 import com.shieldstream.tv.model.CatalogDetails
 import com.shieldstream.tv.model.Episode
@@ -61,6 +66,12 @@ sealed interface DetailsUiState {
         val message: String? = null,
         /** Progreso de visionado guardado (todas las claves); se actualiza solo al volver del reproductor. */
         val progress: Map<String, WatchProgress> = emptyMap(),
+        /** Ajuste "Castellano primero": ordena arriba las fuentes con audio en español. */
+        val spanishFirst: Boolean = false,
+        /** Panel de Fuentes: solo las de audio en español (se recuerda; se cambia en el propio panel). */
+        val spanishOnly: Boolean = false,
+        /** Está en "Mi lista" del perfil. */
+        val inMyList: Boolean = false,
     ) : DetailsUiState {
         val isSeries: Boolean get() = details.item.type == MediaType.TV
 
@@ -86,6 +97,9 @@ class DetailsViewModel @Inject constructor(
     private val displayCapabilities: DisplayCapabilityDetector,
     private val holder: SelectedContentHolder,
     private val watchProgress: WatchProgressRepository,
+    private val settings: SettingsRepository,
+    private val trakt: TraktRepository,
+    private val myList: MyListRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<DetailsUiState>(DetailsUiState.Loading)
@@ -102,12 +116,33 @@ class DetailsViewModel @Inject constructor(
     private var sourcesJob: Job? = null
     private var episodesJob: Job? = null
     private var pendingFromStart = false
+    /** Siguiente episodio pedido desde el reproductor que está en otra temporada: se pone al cargarla. */
+    private var pendingNext: NextEpisode? = null
 
     init {
         load()
         // Al volver del reproductor el progreso cambia: ticks, barras y "Reanudar" se actualizan solos.
         viewModelScope.launch {
             watchProgress.progress.collect { map -> updateContent { c -> withProgress(c, map) } }
+        }
+        // "Mi lista": el botón de la ficha cambia al momento (y si Trakt la cambia desde la otra Shield).
+        viewModelScope.launch {
+            myList.entries.collect { list ->
+                updateContent { c -> c.copy(inMyList = list.any { it.type == c.details.item.type && it.id == c.details.item.id }) }
+            }
+        }
+        // Créditos del episodio en curso: se buscan ya las fuentes del siguiente (misma temporada), así al pasar
+        // arranca en cuanto Real-Debrid da el enlace, sin esperar a los buscadores.
+        viewModelScope.launch {
+            holder.prefetch.collect { next ->
+                val c = content() ?: return@collect
+                if (next == null || !c.isSeries || next.showId != c.details.item.id) return@collect
+                val ep = (c.episodes as? EpisodesState.Ready)?.episodes
+                    ?.firstOrNull { it.season == next.season && it.number == next.episode } ?: return@collect
+                if (c.selectedEpisode == ep && (c.sources is SourcesState.Ready || c.sources == SourcesState.Loading)) return@collect
+                updateContent { it.copy(selectedEpisode = ep) }
+                loadSources(ep)
+            }
         }
     }
 
@@ -124,6 +159,68 @@ class DetailsViewModel @Inject constructor(
         return updated.copy(selectedEpisode = next, sources = SourcesState.Idle)
     }
 
+    /** Fuentes: las que Real-Debrid ya bloqueó (451) se marcan para no volver a elegirlas. */
+    fun isBlocked(source: StreamSource): Boolean = source.resolveUrl == null && realDebridRepository.isBlocked(source.infoHash)
+
+    /** Botón "Solo en español" del panel de Fuentes: filtra al momento y queda guardado para la próxima vez. */
+    fun toggleSpanishOnly() {
+        val enabled = !(content()?.spanishOnly ?: return)
+        updateContent { it.copy(spanishOnly = enabled) }
+        viewModelScope.launch { settings.setSpanishOnlySources(enabled) }
+    }
+
+    // ------------------------------------------------------------------ Mi lista
+
+    fun toggleMyList() {
+        val item = content()?.details?.item ?: return
+        if (myList.contains(item.type, item.id)) myList.remove(item.type, item.id) else myList.add(item.type, item.id)
+    }
+
+    // ------------------------------------------------------------------ visto / no visto a mano
+
+    /** Película: Vista ⇄ no vista. */
+    fun toggleMovieWatched() {
+        val c = _uiState.value as? DetailsUiState.Content ?: return
+        if (c.isSeries) return
+        val key = WatchProgress.movieKey(c.details.item.id)
+        setWatched(listOf(key to c.details.runtimeMinutes?.toLong()), watched = c.progress[key]?.isWatched != true)
+    }
+
+    /** Episodio (mantener OK en su tarjeta): visto ⇄ no visto. */
+    fun toggleEpisodeWatched(episode: Episode) {
+        val c = _uiState.value as? DetailsUiState.Content ?: return
+        val key = WatchProgress.episodeKey(c.details.item.id, episode.season, episode.number)
+        setWatched(listOf(key to episode.runtimeMinutes?.toLong()), watched = c.progressOf(episode)?.isWatched != true)
+    }
+
+    /** Temporada que se está viendo: si ya está entera vista, se desmarca; si no, se marca entera. */
+    fun toggleSeasonWatched() {
+        val c = _uiState.value as? DetailsUiState.Content ?: return
+        val episodes = (c.episodes as? EpisodesState.Ready)?.episodes.orEmpty()
+        if (episodes.isEmpty()) return
+        val allWatched = episodes.all { c.progressOf(it)?.isWatched == true }
+        setWatched(
+            episodes.map { WatchProgress.episodeKey(c.details.item.id, it.season, it.number) to it.runtimeMinutes?.toLong() },
+            watched = !allWatched,
+        )
+    }
+
+    /** (clave, duración en minutos si se sabe). Primero Trakt (mira qué estaba a medias), luego lo local. */
+    private fun setWatched(entries: List<Pair<String, Long?>>, watched: Boolean) {
+        if (entries.isEmpty()) return
+        trakt.setWatched(entries.map { it.first }, watched)
+        if (watched) {
+            entries.forEach { (key, minutes) ->
+                // 100 %: con su duración si se conoce (para los minutos de "Seguir viendo"), si no 1/1 como los de Trakt.
+                val duration = watchProgress.get(key)?.durationMs?.takeIf { it > 1 } ?: minutes?.times(60_000L) ?: 1L
+                watchProgress.save(key, duration, duration)
+            }
+        } else {
+            // Sin avisar a "cleared" (eso quitaría de "a medias" en Trakt): del historial ya se encarga setWatched.
+            watchProgress.removeRemote(entries.map { it.first })
+        }
+    }
+
     private fun load() {
         val item = holder.selectedItem.value
         if (item == null) {
@@ -133,7 +230,11 @@ class DetailsViewModel @Inject constructor(
         viewModelScope.launch {
             // Si TMDB falla seguimos con los datos básicos de la tarjeta.
             val details = runCatching { catalogRepository.getDetails(item) }.getOrElse { CatalogDetails(item) }
-            _uiState.value = DetailsUiState.Content(details, progress = watchProgress.progress.value)
+            _uiState.value = DetailsUiState.Content(
+                details,
+                progress = watchProgress.progress.value,
+                inMyList = myList.contains(details.item.type, details.item.id),
+            )
             if (details.item.type == MediaType.TV) {
                 val (season, episode) = continueTarget(details)
                     ?: (details.seasons.firstOrNull()?.number to null)
@@ -184,6 +285,10 @@ class DetailsViewModel @Inject constructor(
                                 ?: c.selectedEpisode
                                 ?: eps.firstOrNull(),
                         )
+                    }
+                    pendingNext?.takeIf { it.season == season }?.let { next ->
+                        pendingNext = null
+                        eps.firstOrNull { it.number == next.episode }?.let { playEpisode(it) }
                     }
                 }
                 .onFailure { e -> updateContent { it.copy(episodes = EpisodesState.Error(e.message ?: "Error")) } }
@@ -247,6 +352,33 @@ class DetailsViewModel @Inject constructor(
 
     fun consumeMessage() = updateContent { it.copy(message = null) }
 
+    /**
+     * La ficha vuelve a verse. Si se sale del reproductor por "Siguiente episodio" (cuenta atrás al final o OK),
+     * se reproduce ese episodio: aquí están la búsqueda de fuentes y la cola, igual que al pulsarlo a mano.
+     */
+    fun onScreenResumed() {
+        val next = holder.consumeNextRequest() ?: return
+        val c = content() ?: return
+        val loaded = (c.episodes as? EpisodesState.Ready)?.episodes
+            ?.firstOrNull { it.season == next.season && it.number == next.episode }
+        if (loaded != null) {
+            playEpisode(loaded)
+        } else {
+            pendingNext = next
+            selectSeason(next.season, preferredEpisode = next.episode)
+        }
+    }
+
+    /** Qué va después de [episode]: el siguiente de la temporada o, si era el último, el 1 de la siguiente. */
+    private fun nextEpisodeAfter(c: DetailsUiState.Content, episode: Episode): NextEpisode? {
+        val eps = (c.episodes as? EpisodesState.Ready)?.episodes.orEmpty()
+        val index = eps.indexOfFirst { it.season == episode.season && it.number == episode.number }
+        val show = c.details.item.id
+        eps.getOrNull(index + 1)?.takeIf { index >= 0 }?.let { return NextEpisode(show, it.season, it.number, "${it.code} · ${it.title}") }
+        val nextSeason = c.details.seasons.map { it.number }.filter { it > episode.season }.minOrNull() ?: return null
+        return NextEpisode(show, nextSeason, 1, tr("T$nextSeason:E1", "S$nextSeason:E1"))
+    }
+
     /** La ficha deja de verse: un "Reanudar" que aún esperaba fuentes ya no debe arrancar solo. */
     fun onScreenHidden() {
         if (content()?.pendingPlay == true) updateContent { it.copy(pendingPlay = false) }
@@ -257,6 +389,9 @@ class DetailsViewModel @Inject constructor(
         sourcesJob?.cancel()
         updateContent { it.copy(sources = SourcesState.Loading) }
         sourcesJob = viewModelScope.launch {
+            val spanishFirst = settings.spanishFirst.first()
+            val spanishOnly = settings.spanishOnlySources.first()
+            updateContent { it.copy(spanishFirst = spanishFirst, spanishOnly = spanishOnly) }
             // Real-Debrid retiró instantAvailability (nov-2024): "cacheado" = ya en tu librería. Se pide una vez.
             var rdCached: Set<String>? = null
             catalogRepository.getStreams(c.details.item, episode)
@@ -271,7 +406,7 @@ class DetailsViewModel @Inject constructor(
                     val enriched = result.sources.map {
                         if (it.resolveUrl == null) it.copy(isCached = it.infoHash.lowercase() in knownCached) else it
                     }
-                    result to prioritizeSourcesUseCase(enriched, displayCapabilities.supportedHdrTypes())
+                    result to prioritizeSourcesUseCase(enriched, displayCapabilities.supportedHdrTypes(), preferSpanish = spanishFirst)
                 }
                 .catch { e ->
                     updateContent {
@@ -327,7 +462,14 @@ class DetailsViewModel @Inject constructor(
             season = episode?.season,
             episode = episode?.number,
         )
-        holder.playQueue(queue, label, progressKey = key, fromStart = fromStart, media = media)
+        holder.playQueue(
+            queue,
+            label,
+            progressKey = key,
+            fromStart = fromStart,
+            media = media,
+            next = episode?.let { nextEpisodeAfter(c, it) },
+        )
         _events.tryEmit(DetailsEvent.OpenPlayer)
     }
 

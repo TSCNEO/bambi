@@ -66,4 +66,10 @@ interface TraktRepository {
      * "tv:ID:T:E", ids de TMDB) y [fraction] cuánto va (0..1). Solo si el perfil activo tiene Trakt.
      */
     fun scrobble(progressKey: String, fraction: Float, action: ScrobbleAction)
+
+    /**
+     * Marcado a mano en la ficha (claves de WatchProgress): [watched] = al historial de Trakt (y fuera de "a medias");
+     * si no, se quita del historial. Llamar ANTES de guardar el cambio local. Solo si el perfil activo tiene Trakt.
+     */
+    fun setWatched(progressKeys: Collection<String>, watched: Boolean)
 }

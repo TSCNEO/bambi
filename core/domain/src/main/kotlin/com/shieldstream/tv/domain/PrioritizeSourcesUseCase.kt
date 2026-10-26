@@ -17,9 +17,12 @@ class PrioritizeSourcesUseCase {
         sources: List<StreamSource>,
         supportedHdr: Set<HdrType>,
         preferCached: Boolean = true,
+        /** Ajuste "Castellano primero": tras las que están en caché (arrancan al instante), las de audio en español. */
+        preferSpanish: Boolean = false,
     ): List<StreamSource> {
         return sources.sortedWith(
             compareByDescending<StreamSource> { if (preferCached) it.isCached else true }
+                .thenByDescending { if (preferSpanish) it.spanishAudioScore else 0 }
                 // AV1 = decodificación por CPU: solo si no hay nada por hardware.
                 .thenBy { it.softwareDecode }
                 .thenByDescending { effectiveHdrRank(it.hdrType, supportedHdr) }

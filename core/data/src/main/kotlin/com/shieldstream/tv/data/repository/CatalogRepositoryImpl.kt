@@ -58,7 +58,11 @@ class CatalogRepositoryImpl @Inject constructor(
     private val extras: HomeExtrasSource,
     private val store: TokenStore,
     private val settings: SettingsRepository,
+    private val profiles: com.shieldstream.tv.domain.ProfileRepository,
 ) : CatalogRepository {
+
+    /** Perfil infantil activo: Inicio, portada y búsqueda solo con contenido para niños. */
+    private val kids: Boolean get() = profiles.active.value.kids
 
     // --- Caché en memoria de Inicio / Series / Películas (portada + filas) ---
     // Cambiar de pestaña no vuelve a pedir nada a TMDB durante [HOME_CACHE_MS], y el Inicio precarga las otras
@@ -76,11 +80,14 @@ class CatalogRepositoryImpl @Inject constructor(
             load().also { if (it.isNotEmpty()) homeCache[cacheKey] = Cached(System.currentTimeMillis(), it) }
         }
 
+    // Infantil: portada propia (la semanal se elige entre lo más visto de TMDB, que no es para niños).
     override suspend fun getFeatured(filter: HomeFilter): List<FeaturedItem> =
-        cachedHome("featured_${filter.name}") { extras.featured(filter) }
+        if (kids) cachedHome("featured_kids_${filter.name}") { extras.kidsFeatured(filter) }
+        else cachedHome("featured_${filter.name}") { extras.featured(filter) }
 
+    // Infantil: solo sus categorías (la pantalla tampoco enseña otras; esto cubre cualquier otro camino).
     override suspend fun getCategoryRows(category: Category, filter: HomeFilter): List<CatalogRow> =
-        extras.categoryRows(category, filter)
+        if (kids && category !in Category.KIDS_SAFE) emptyList() else extras.categoryRows(category, filter)
 
     /** Clave de TMDB de Ajustes, leída en cada petición: si se cambia allí, vale al momento. */
     private val key: String get() = store.tmdbKey.orEmpty()
@@ -94,11 +101,12 @@ class CatalogRepositoryImpl @Inject constructor(
     )
 
     override suspend fun getHome(filter: HomeFilter): List<CatalogRow> =
-        cachedHome("home_${filter.name}") { loadHome(filter) }
+        if (kids) cachedHome("home_kids_${filter.name}") { loadHome(kidsRowsFor(filter)) }
+        else cachedHome("home_${filter.name}") { loadHome(rowsFor(filter)) }
 
-    private suspend fun loadHome(filter: HomeFilter): List<CatalogRow> = coroutineScope {
+    private suspend fun loadHome(specs: List<RowSpec>): List<CatalogRow> = coroutineScope {
         if (key.isBlank()) throw IllegalStateException(MISSING_TMDB_KEY)
-        rowsFor(filter)
+        specs
             .map { spec ->
                 async {
                     runCatching {
@@ -153,12 +161,57 @@ class CatalogRepositoryImpl @Inject constructor(
     }
 
     override suspend fun trending(): List<CatalogItem> =
-        tmdb.trendingAll(key).results.mapNotNull { it.toCatalogItemOrNull() }.filter { it.posterUrl != null }
+        if (kids) kidsMovies(mapOf()).take(20)
+        else tmdb.trendingAll(key).results.mapNotNull { it.toCatalogItemOrNull() }.filter { it.posterUrl != null }
 
     override suspend fun search(query: String): List<CatalogItem> =
         tmdb.search(key, query).results
+            .filter { !kids || it.genre_ids.any { g -> g in KIDS_GENRES } } // infantil: solo animación/familia/infantil
             .mapNotNull { it.toCatalogItemOrNull() } // descarta personas
             .filter { it.posterUrl != null }
+
+    // ------------------------------------------------------------------ perfil infantil
+    // Películas: animación o familia con calificación de EE. UU. hasta PG (TMDB no tiene la española para todo).
+    // Series: el género "Infantil" (Kids) de TMDB. Nada de "Animación" a secas en series: incluye series de adultos.
+
+    private suspend fun kidsMovies(extra: Map<String, String>, genres: String = "16|10751"): List<CatalogItem> =
+        tmdb.discoverMovieQuery(
+            key,
+            mapOf(
+                "with_genres" to genres,
+                "certification_country" to "US",
+                "certification.lte" to "PG",
+                "include_adult" to "false",
+                "sort_by" to "popularity.desc",
+            ) + extra,
+        ).results.map { it.toCatalogItem() }
+
+    private suspend fun kidsTv(extra: Map<String, String>, genres: String = "10762"): List<CatalogItem> =
+        tmdb.discoverTvQuery(
+            key,
+            mapOf("with_genres" to genres, "include_adult" to "false", "sort_by" to "popularity.desc") + extra,
+        ).results.map { it.toCatalogItem() }
+
+    private fun kidsRowsFor(filter: HomeFilter): List<RowSpec> {
+        val topRated = mapOf("sort_by" to "vote_average.desc", "vote_count.gte" to "300")
+        val movies = listOf(
+            RowSpec("k_movies", tr("Películas infantiles", "Kids movies")) { kidsMovies(mapOf()) },
+            RowSpec("k_animation", tr("Animación", "Animation")) { kidsMovies(mapOf(), genres = "16") },
+            RowSpec("k_family", tr("Para toda la familia", "For the whole family")) { kidsMovies(mapOf("certification.lte" to "G"), genres = "10751") },
+            RowSpec("k_top_movies", tr("Las mejor valoradas", "Top rated")) { kidsMovies(topRated) },
+            RowSpec("k_more_movies", tr("Más películas", "More movies")) { kidsMovies(mapOf("page" to "2")) },
+        )
+        val shows = listOf(
+            RowSpec("k_tv", tr("Series infantiles", "Kids shows")) { kidsTv(mapOf()) },
+            RowSpec("k_cartoons", tr("Dibujos animados", "Cartoons")) { kidsTv(mapOf(), genres = "10762,16") },
+            RowSpec("k_more_tv", tr("Más series", "More shows")) { kidsTv(mapOf("page" to "2")) },
+        )
+        return when (filter) {
+            HomeFilter.ALL -> listOf(movies[0], shows[0], movies[1], shows[1], movies[2], movies[3], shows[2])
+            HomeFilter.MOVIES -> movies
+            HomeFilter.TV -> shows
+        }
+    }
 
     override suspend fun getDetails(item: CatalogItem): CatalogDetails {
         val id = item.id.toIntOrNull() ?: return CatalogDetails(item)
@@ -308,8 +361,17 @@ class CatalogRepositoryImpl @Inject constructor(
 
     private suspend fun providerStreams(p: SourceProvider, item: CatalogItem, type: String, streamId: String): List<StreamSource> =
         when (p) {
-            SourceProvider.AIOSTREAMS -> store.getSecret(TokenStore.keyNameFor(ApiService.AIOSTREAMS))
-                ?.let(::aioStreamBase)?.let { aioStreams(it, item, type, streamId) }.orEmpty()
+            // Uno o varios addons (URLs separadas por espacios): todos a la vez, cada fuente con el nombre de su addon.
+            SourceProvider.AIOSTREAMS -> coroutineScope {
+                val bases = aioStreamBases(store.getSecret(TokenStore.keyNameFor(ApiService.AIOSTREAMS)).orEmpty())
+                bases.map { base ->
+                    async {
+                        runCatching { aioStreams(base, item, type, streamId, label = addonLabel(base, bases.size)) }
+                            .onFailure { Log.w("Catalog", "Addon ${base.take(40)} falló: ${it.message}") }
+                            .getOrDefault(emptyList())
+                    }
+                }.awaitAll().flatten()
+            }
             SourceProvider.THEPIRATEBAY, SourceProvider.KNABEN,
             SourceProvider.NYAA,
             -> scraperStreams(p, item, streamId)
@@ -336,6 +398,13 @@ class CatalogRepositoryImpl @Inject constructor(
         // Series, como CocoScrapers: el episodio y también los packs de temporada (Real-Debrid elige dentro del
         // pack el archivo del episodio, ver ResolveStreamUseCase.pickFile). Dos búsquedas: "SxxEyy" y "Sxx".
         val queries = if (episodeTag != null) listOf("$title $episodeTag", "$title $seasonTag") else listOf("$title ${item.year ?: ""}".trim())
+        // Anime: además "Título 1100" (numeración absoluta, la de casi todas sus releases). Va después de
+        // releaseTitle, que es quien sabe si es anime.
+        val absolute = if (season != null && episode != null) absoluteEpisode(item, season, episode) else null
+        // Anime: Nyaa y la categoría Anime de Knaben. Los géneros no siempre vienen en el item (búsqueda): vale
+        // también lo que sabe releaseTitle (japonés + Animación).
+        val anime = item.genres.any { it.contains("anim", ignoreCase = true) } || animeSeasons.containsKey(item.key)
+        val allQueries = if (absolute != null) queries + "$title ${"%02d".format(absolute)}" else queries
         val packRx = season?.let { Regex("(?i)(\\bS0*$it\\b(?!\\s*E\\d)|season\\s*0*$it\\b|temporada\\s*0*$it\\b|complete)") }
         var seen = 0
         // El título tiene que ir al principio (tras etiquetas [Grupo]) y seguido de año, temporada o calidad:
@@ -346,16 +415,28 @@ class CatalogRepositoryImpl @Inject constructor(
                 "[\\W_]+(?:\\(?(?:19|20)\\d{2}|s\\d|season|temporada|complete|\\d{3,4}p|\\d+x\\d)",
             RegexOption.IGNORE_CASE,
         )
+        // "[Grupo] One Piece - 1100 (1080p)" / "One Piece E1100": el título y justo después el número absoluto
+        // (no un rango "1100-1110", que sería un pack sin forma de elegir el archivo).
+        val absoluteRx = absolute?.let {
+            Regex(
+                "^(?:\\[[^\\]]*\\]\\s*)*" + title.split(Regex("[^\\p{L}\\p{N}]+")).filter { w -> w.isNotBlank() }
+                    .joinToString("[\\W_]+") { w -> Regex.escape(w) } +
+                    "[\\W_]+(?:e|ep|episode|episodio)?\\s*0*$it(?:v\\d)?(?!\\d|\\s*[-~]\\s*\\d)",
+                RegexOption.IGNORE_CASE,
+            )
+        }
         fun accepts(name: String): Boolean {
             seen++
-            if (!normalize(name).contains(wanted) || !titleRx.containsMatchIn(name)) return false
+            if (!normalize(name).contains(wanted)) return false
+            if (absoluteRx?.containsMatchIn(name) == true) return true
+            if (!titleRx.containsMatchIn(name)) return false
             if (episodeTag == null) return item.year == null || name.contains(item.year.toString())
             return name.contains(episodeTag, ignoreCase = true) || packRx?.containsMatchIn(name) == true
         }
         val found = mutableListOf<TorrentioStreamDto>()
         when (p) {
-            else -> for (query in queries) {
-                if (p == SourceProvider.NYAA && item.genres.none { it.contains("anim", ignoreCase = true) }) break
+            else -> for (query in allQueries) {
+                if (p == SourceProvider.NYAA && !anime) break
                 val enc = java.net.URLEncoder.encode(query, "UTF-8")
                 when (p) {
                     SourceProvider.THEPIRATEBAY -> {
@@ -373,7 +454,7 @@ class CatalogRepositoryImpl @Inject constructor(
                         val body = org.json.JSONObject()
                             .put("search_type", "100%").put("search_field", "title").put("query", query)
                             .put("order_by", "seeders").put("order_direction", "desc").put("size", 150).put("hide_xxx", true)
-                            .put("categories", org.json.JSONArray().put(if (episodeTag != null) 2000000 else 3000000))
+                            .put("categories", org.json.JSONArray().put(if (episodeTag != null) 2000000 else 3000000).apply { if (anime) put(6000000) })
                             .toString().toRequestBody("application/json".toMediaType())
                         val hits = org.json.JSONObject(torrentio.postJson("$base/v1", body).string()).optJSONArray("hits")
                         for (i in 0 until (hits?.length() ?: 0)) {
@@ -402,7 +483,7 @@ class CatalogRepositoryImpl @Inject constructor(
                 }
             }
         }
-        Log.w("Catalog", "${p.title}: ${found.size} aceptadas de $seen (consultas: $queries)")
+        Log.w("Catalog", "${p.title}: ${found.size} aceptadas de $seen (consultas: $allQueries)")
         return found.distinctBy { it.infoHash }.mapNotNull { it.toStreamSource(item) }
             .map { if (season != null) it.copy(season = season, episode = episode) else it }
             .sortedByDescending { it.seeders ?: 0 }
@@ -425,12 +506,52 @@ class CatalogRepositoryImpl @Inject constructor(
         return aioStreams("${SourceProvider.COMET.baseUrl}/$b64", item, type, streamId, label = "Comet")
     }
 
-    /** Título en inglés de TMDB (las releases van en inglés); si falla, el que se ve en la app. */
-    private suspend fun releaseTitle(item: CatalogItem): String = runCatching {
-        val id = item.id.toInt()
-        if (item.type == MediaType.TV) tmdb.tvDetails(id, key).let { englishTitle(it.translations) ?: it.original_name }
-        else tmdb.movieDetails(id, key).let { englishTitle(it.translations) ?: it.original_title }
-    }.getOrNull()?.takeIf { it.isNotBlank() } ?: item.title
+    /**
+     * Título en inglés de TMDB (las releases van en inglés); si falla, el que se ve en la app.
+     * Una sola petición por título: antes cada buscador propio (TPB, Knaben, Nyaa) la repetía a la vez.
+     */
+    private suspend fun releaseTitle(item: CatalogItem): String = releaseTitleLock.withLock {
+        releaseTitles[item.key]?.let { return@withLock it }
+        val title = runCatching {
+            val id = item.id.toInt()
+            if (item.type == MediaType.TV) {
+                tmdb.tvDetails(id, key).also { d ->
+                    // Anime: episodios por temporada, para la numeración absoluta (ver absoluteEpisode).
+                    if (d.original_language == "ja" && d.genres.any { it.id == 16 }) {
+                        animeSeasons[item.key] = d.seasons.filter { it.season_number > 0 }.associate { it.season_number to it.episode_count }
+                    }
+                }.let { englishTitle(it.translations) ?: it.original_name }
+            } else {
+                tmdb.movieDetails(id, key).let { englishTitle(it.translations) ?: it.original_title }
+            }
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+        title?.also { releaseTitles[item.key] = it } ?: item.title
+    }
+
+    /** Anime (TMDB: japonés + Animación) → episodios de cada temporada. Lo rellena [releaseTitle]. */
+    private val animeSeasons = java.util.concurrent.ConcurrentHashMap<String, Map<Int, Int>>()
+
+    /** Primer número de episodio de cada temporada de anime ("clave:temporada"): > 1 = TMDB ya numera absoluto. */
+    private val seasonStarts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /**
+     * Número absoluto del episodio en un anime (T3E5 → todos los de T1 y T2 + 5), como lo numeran sus releases.
+     * Si TMDB ya lo numera así (One Piece: la T21 empieza en el 892), es el mismo número.
+     * null si no es anime o faltan datos de alguna temporada anterior.
+     */
+    private suspend fun absoluteEpisode(item: CatalogItem, season: Int, episode: Int): Int? {
+        val counts = animeSeasons[item.key] ?: return null
+        val start = seasonStarts.getOrPut("${item.key}:$season") {
+            runCatching { tmdb.tvSeason(item.id.toInt(), season, key).episodes.minOfOrNull { it.episode_number } }
+                .getOrNull() ?: 1
+        }
+        if (start > 1) return episode
+        val before = (1 until season).map { counts[it] ?: return null }
+        return before.sum() + episode
+    }
+
+    private val releaseTitleLock = Mutex()
+    private val releaseTitles = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     private fun normalize(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
 
@@ -445,7 +566,12 @@ class CatalogRepositoryImpl @Inject constructor(
      * resolveUrl como los /resolve/ de Torrentio. No traen infoHash → se inventa uno estable con la URL.
      * Se lee mejor con el formateador \"Torrentio\" en la configuración de AIOStreams (calidad, 👤, 💾).
      */
-    private suspend fun aioStreams(base: String, item: CatalogItem, type: String, streamId: String, label: String = "AIOStreams"): List<StreamSource> =
+    /** Nombre corto del addon para la lista de fuentes ("aiostreams.elfhosted.com" → "aiostreams"). */
+    private fun addonLabel(base: String, count: Int): String =
+        if (count <= 1) tr("el addon de Stremio", "the Stremio addon")
+        else base.removePrefix("https://").removePrefix("http://").substringBefore('/').substringBefore('.')
+
+    private suspend fun aioStreams(base: String, item: CatalogItem, type: String, streamId: String, label: String = tr("el addon de Stremio", "the Stremio addon")): List<StreamSource> =
         torrentio.streamsAt("$base/stream/$type/$streamId.json").streams.mapNotNull { s ->
             // Addon de torrents (sin url, con infoHash): como Torrentio, lo resuelve Real-Debrid.
             val link = s.url?.takeIf { it.startsWith("http") } ?: return@mapNotNull s.toStreamSource(item)
@@ -460,10 +586,15 @@ class CatalogRepositoryImpl @Inject constructor(
     private suspend fun torrentioStreams(p: SourceProvider, item: CatalogItem, type: String, streamId: String): List<StreamSource> {
         val debrid = settings.debridService.first()
         val base = checkNotNull(p.baseUrl)
+        // "Castellano primero": Torrentio también pone delante las releases en español (opción "language").
+        val language = if (settings.spanishFirst.first()) "language=spanish" else null
         if (!debrid.viaTorrentio) {
             // Real-Debrid: el buscador sin clave (solo infoHash); la resolución es local con la API de RD.
-            val streams = if (p == SourceProvider.TORRENTIO) torrentio.streams(type, streamId)
-            else torrentio.streamsAt("$base/stream/$type/$streamId.json")
+            val streams = when {
+                p != SourceProvider.TORRENTIO -> torrentio.streamsAt("$base/stream/$type/$streamId.json")
+                language != null -> torrentio.streamsWithConfig(language, type, streamId)
+                else -> torrentio.streams(type, streamId)
+            }
             return streams.streams.mapNotNull { it.toStreamSource(item) }
         }
         // Otros debrids: solo los buscadores con la API de Torrentio saben pedir sus enlaces.
@@ -471,7 +602,7 @@ class CatalogRepositoryImpl @Inject constructor(
         // Otros debrids: Torrentio con la clave, que marca la caché y da enlaces /resolve/.
         val key = store.getSecret(TokenStore.keyNameFor(debrid.apiService))?.takeIf { it.isNotBlank() }
             ?: error(tr("Falta la clave de ${debrid.title}. Añádela en Ajustes (rueda arriba a la derecha).", "${debrid.title} key missing. Add it in Settings (gear, top right)."))
-        val config = torrentioConfig(debrid, key)
+        val config = listOfNotNull(language, torrentioConfig(debrid, key)).joinToString("|")
         val streams = if (p == SourceProvider.TORRENTIO) torrentio.streamsWithConfig(config, type, streamId).streams
         else torrentio.streamsAt("$base/$config/stream/$type/$streamId.json").streams
         val sources = streams.mapNotNull { it.toDebridSource(item, debrid) }
@@ -602,7 +733,8 @@ class CatalogRepositoryImpl @Inject constructor(
             seeders = availability ?: parseSeeders(text),
             isCached = false,
             fileName = fileName,
-            languages = parseLanguages(text),
+            // Torrentio pone las banderas en el texto; Peerflix, en el nombre ("Peerflix 🇪🇸 720p").
+            languages = parseLanguages("$name\n$text"),
             softwareDecode = isAv1,
         )
     }
@@ -649,6 +781,8 @@ class CatalogRepositoryImpl @Inject constructor(
         SEEDERS_REGEX.find(text)?.groupValues?.get(1)?.toIntOrNull()
 
     private companion object {
+        /** Géneros TMDB que cuentan como infantiles en la búsqueda: animación, familia, infantil (series). */
+        val KIDS_GENRES = setOf(16, 10751, 10762)
         const val PROVIDER_TIMEOUT_MS = 25_000L
         const val BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
         val MAGNET = Regex("magnet:\\?xt=urn:btih:([a-fA-F0-9]{40})([^\"'<>\\s]*)")
