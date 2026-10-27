@@ -32,9 +32,12 @@ jobs:
       # upstream_version.txt, para que la app pueda enseñar "Versión X · base Y" en Ajustes.
       - name: Track upstream base version
         run: |
-          UPSTREAM_TAG=$(git describe --tags --abbrev=0 upstream/main 2>/dev/null | sed 's/^v//')
+          UPSTREAM_TAG=$(git show upstream/main:app/build.gradle.kts 2>/dev/null | grep 'versionName = ' | head -n 1 | cut -d'"' -f2)
           if [ -z "$UPSTREAM_TAG" ]; then
-            echo "No upstream tag found; keeping current upstream_version.txt"
+            UPSTREAM_TAG=$(git describe --tags --abbrev=0 upstream/main 2>/dev/null | sed 's/^v//')
+          fi
+          if [ -z "$UPSTREAM_TAG" ]; then
+            echo "No upstream version found; keeping current upstream_version.txt"
             exit 0
           fi
           echo "Upstream base version: $UPSTREAM_TAG"

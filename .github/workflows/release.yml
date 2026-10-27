@@ -40,14 +40,17 @@ jobs:
       - name: Resolve upstream base version
         run: |
           git remote add upstream https://github.com/grodri99/bambi.git 2>/dev/null || true
-          git fetch upstream main --tags 2>/dev/null || true
-          UPSTREAM_TAG=$(git describe --tags --abbrev=0 upstream/main 2>/dev/null | sed 's/^v//')
+          git fetch upstream main 2>/dev/null || true
+          # Read directly from upstream's build.gradle.kts to avoid tag namespace collisions
+          UPSTREAM_TAG=$(git show upstream/main:app/build.gradle.kts 2>/dev/null | grep 'versionName = ' | head -n 1 | cut -d'"' -f2)
           if [ -z "$UPSTREAM_TAG" ]; then
             UPSTREAM_TAG=$(cat upstream_version.txt 2>/dev/null | tr -d '[:space:]')
           fi
           if [ -z "$UPSTREAM_TAG" ]; then
             UPSTREAM_TAG="1.0.6"
           fi
+          # Remove upstream remote so gh CLI uses origin (TSCNEO/bambi) as default repo
+          git remote remove upstream 2>/dev/null || true
           echo "UPSTREAM_VERSION=$UPSTREAM_TAG" >> "$GITHUB_ENV"
           echo "Upstream base version: $UPSTREAM_TAG"
 
@@ -87,11 +90,13 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           TAG="${{ steps.vars.outputs.tag }}"
-          gh release delete "$TAG" --yes || true
+          gh release delete "$TAG" --yes --repo "${{ github.repository }}" || true
           git tag -f "$TAG" || true
           git push origin "$TAG" --force || true
           gh release create "$TAG" dist/Bambi.apk \
+            --repo "${{ github.repository }}" \
             --title "Bambi $TAG" \
             --notes "Release de Bambi con soporte de fuentes directas y actualización automática."
