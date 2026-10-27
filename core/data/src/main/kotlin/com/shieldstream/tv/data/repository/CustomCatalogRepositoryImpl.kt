@@ -44,6 +44,19 @@ class CustomCatalogRepositoryImpl @Inject constructor(
 
     override fun isActivated(): Boolean = tokenStore.getSecret("custom_catalog_pin") != null
 
+    override fun getCatalogVersion(): String? {
+        val stored = tokenStore.getSecret("custom_catalog_version")
+        if (!stored.isNullOrBlank()) return stored
+        if (!dbFile.exists()) return null
+        return runCatching {
+            SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+                db.rawQuery("SELECT value FROM meta WHERE key = 'moria_version' OR key = 'version' LIMIT 1", null).use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                }
+            }
+        }.getOrNull()
+    }
+
     override suspend fun pairWithPin(pin: String): Boolean = withContext(Dispatchers.IO) {
         runCatching {
             val req = Request.Builder().url(versionJsonUrl).build()
@@ -51,6 +64,8 @@ class CustomCatalogRepositoryImpl @Inject constructor(
                 if (!resp.isSuccessful) return@runCatching false
                 val body = resp.body?.string() ?: return@runCatching false
                 val root = json.parseToJsonElement(body).jsonObject
+                val versionStr = root["version"]?.jsonPrimitive?.content
+                    ?: root["moria_version"]?.jsonPrimitive?.content ?: "554"
                 val artifacts = root["artifacts"]?.jsonObject ?: return@runCatching false
 
                 val binUrl = artifacts["bin_url"]?.jsonPrimitive?.content
@@ -84,7 +99,8 @@ class CustomCatalogRepositoryImpl @Inject constructor(
 
                     tokenStore.setSecret("custom_catalog_pin", pin)
                     tokenStore.setSecret("custom_catalog_sha", sha)
-                    Log.i("CustomCatalog", "Paired, decrypted and catalog.db extracted successfully")
+                    tokenStore.setSecret("custom_catalog_version", versionStr)
+                    Log.i("CustomCatalog", "Paired, decrypted and catalog.db extracted successfully (v$versionStr)")
                     true
                 }
             }
@@ -94,46 +110,66 @@ class CustomCatalogRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun forceUpdate(): CustomCatalogRepository.SyncResult = withContext(Dispatchers.IO) {
+        if (!isActivated()) return@withContext CustomCatalogRepository.SyncResult.Error("No activado")
+        val pin = tokenStore.getSecret("custom_catalog_pin")
+            ?: return@withContext CustomCatalogRepository.SyncResult.Error("Sin PIN")
+
+        runCatching {
+            val req = Request.Builder().url(versionJsonUrl).build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@runCatching CustomCatalogRepository.SyncResult.Error("HTTP ${resp.code}")
+                val body = resp.body?.string() ?: return@runCatching CustomCatalogRepository.SyncResult.Error("Sin respuesta")
+                val root = json.parseToJsonElement(body).jsonObject
+                val versionStr = root["version"]?.jsonPrimitive?.content
+                    ?: root["moria_version"]?.jsonPrimitive?.content ?: "?"
+                val artifacts = root["artifacts"]?.jsonObject
+                    ?: return@runCatching CustomCatalogRepository.SyncResult.Error("Artefactos no encontrados")
+
+                val binUrl = artifacts["bin_url"]?.jsonPrimitive?.content
+                    ?: artifacts["url"]?.jsonPrimitive?.content
+                    ?: artifacts["gz_url"]?.jsonPrimitive?.content
+                    ?: return@runCatching CustomCatalogRepository.SyncResult.Error("URL no encontrada")
+                val expectedSha = artifacts["sha256_bin"]?.jsonPrimitive?.content
+                    ?: artifacts["sha256"]?.jsonPrimitive?.content
+                    ?: artifacts["sha256_gz"]?.jsonPrimitive?.content ?: ""
+
+                val currentSha = tokenStore.getSecret("custom_catalog_sha")
+                if (currentSha == expectedSha && dbFile.exists()) {
+                    return@runCatching CustomCatalogRepository.SyncResult.UpToDate(versionStr)
+                }
+
+                val binReq = Request.Builder().url(binUrl).build()
+                client.newCall(binReq).execute().use { binResp ->
+                    if (!binResp.isSuccessful) return@runCatching CustomCatalogRepository.SyncResult.Error("HTTP ${binResp.code} al descargar")
+                    val bytes = binResp.body?.bytes()
+                        ?: return@runCatching CustomCatalogRepository.SyncResult.Error("Descarga vacía")
+                    val sha = sha256(bytes)
+
+                    val decryptedGz = decryptCatalog(bytes, pin)
+                    GZIPInputStream(decryptedGz.inputStream()).use { gis ->
+                        dbFile.outputStream().use { fos ->
+                            gis.copyTo(fos)
+                        }
+                    }
+
+                    tokenStore.setSecret("custom_catalog_sha", sha)
+                    tokenStore.setSecret("custom_catalog_version", versionStr)
+                    Log.i("CustomCatalog", "Catalog updated successfully to v$versionStr")
+                    CustomCatalogRepository.SyncResult.Updated(versionStr)
+                }
+            }
+        }.getOrElse {
+            Log.e("CustomCatalog", "forceUpdate error: ${it.message}", it)
+            CustomCatalogRepository.SyncResult.Error(it.message ?: "Error desconocido")
+        }
+    }
+
     override suspend fun checkAndUpdate() {
         if (!isActivated()) return
-        val pin = tokenStore.getSecret("custom_catalog_pin") ?: return
         withContext(Dispatchers.IO) {
             runCatching {
-                val req = Request.Builder().url(versionJsonUrl).build()
-                client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) return@runCatching
-                    val body = resp.body?.string() ?: return@runCatching
-                    val root = json.parseToJsonElement(body).jsonObject
-                    val artifacts = root["artifacts"]?.jsonObject ?: return@runCatching
-                    val binUrl = artifacts["bin_url"]?.jsonPrimitive?.content
-                        ?: artifacts["url"]?.jsonPrimitive?.content
-                        ?: artifacts["gz_url"]?.jsonPrimitive?.content
-                        ?: return@runCatching
-                    val expectedSha = artifacts["sha256_bin"]?.jsonPrimitive?.content
-                        ?: artifacts["sha256"]?.jsonPrimitive?.content
-                        ?: artifacts["sha256_gz"]?.jsonPrimitive?.content
-                        ?: return@runCatching
-
-                    val currentSha = tokenStore.getSecret("custom_catalog_sha")
-                    if (currentSha == expectedSha && dbFile.exists()) return@runCatching
-
-                    Log.i("CustomCatalog", "Catalog update available, downloading...")
-                    val binReq = Request.Builder().url(binUrl).build()
-                    client.newCall(binReq).execute().use { binResp ->
-                        if (!binResp.isSuccessful) return@runCatching
-                        val bytes = binResp.body?.bytes() ?: return@runCatching
-                        val sha = sha256(bytes)
-
-                        val decryptedGz = decryptCatalog(bytes, pin)
-                        GZIPInputStream(decryptedGz.inputStream()).use { gis ->
-                            dbFile.outputStream().use { fos ->
-                                gis.copyTo(fos)
-                            }
-                        }
-                        tokenStore.setSecret("custom_catalog_sha", sha)
-                        Log.i("CustomCatalog", "Catalog updated successfully to SHA: $sha")
-                    }
-                }
+                forceUpdate()
             }.onFailure { Log.w("CustomCatalog", "checkAndUpdate failed: ${it.message}") }
         }
     }

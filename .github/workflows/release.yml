@@ -50,7 +50,8 @@ jobs:
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
           else
-            TAG="v1.0.6"
+            VER=$(grep -m1 'versionName' app/build.gradle.kts | cut -d'"' -f2)
+            TAG="v${VER}"
           fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 

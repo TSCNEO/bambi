@@ -68,8 +68,9 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
 
     val isCustomCatalogActivated: Boolean get() = customCatalog.isActivated()
-
+    fun getCatalogVersion(): String? = customCatalog.getCatalogVersion()
     suspend fun pairCustomCatalog(pin: String): Boolean = customCatalog.pairWithPin(pin)
+    suspend fun syncCustomCatalog(): com.shieldstream.tv.domain.CustomCatalogRepository.SyncResult = customCatalog.forceUpdate()
 
     private val statuses = MutableStateFlow<Map<ApiService, ServiceStatus>>(emptyMap())
     private val editor = MutableStateFlow<KeyEditor?>(null)

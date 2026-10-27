@@ -119,6 +119,8 @@ fun SettingsScreen(
                     onToggleProvider = viewModel::toggleProvider,
                     onPairCustomCatalog = viewModel::pairCustomCatalog,
                     isCustomCatalogActivated = viewModel.isCustomCatalogActivated,
+                    onSyncCustomCatalog = viewModel::syncCustomCatalog,
+                    getCatalogVersion = viewModel::getCatalogVersion,
                 )
                 s.editor?.let { editor ->
                     KeyEditorDialog(
@@ -146,6 +148,8 @@ private fun SettingsList(
     onToggleProvider: (SourceProvider) -> Unit,
     onPairCustomCatalog: suspend (String) -> Boolean,
     isCustomCatalogActivated: Boolean,
+    onSyncCustomCatalog: suspend () -> com.shieldstream.tv.domain.CustomCatalogRepository.SyncResult,
+    getCatalogVersion: () -> String?,
 ) {
     val requesters = remember { ApiService.entries.associateWith { FocusRequester() } }
     val debridRequester = remember { FocusRequester() }
@@ -241,7 +245,14 @@ private fun SettingsList(
             item { AutoNextCard() }
             item { BufferCard(seconds = state.bufferSeconds, onChange = onBuffer) }
             item { SectionTitle(tr("Acerca de", "About")) }
-            item { AboutCard(onPair = onPairCustomCatalog, isActivated = isCustomCatalogActivated) }
+            item {
+                AboutCard(
+                    onPair = onPairCustomCatalog,
+                    isActivated = isCustomCatalogActivated,
+                    onSync = onSyncCustomCatalog,
+                    getCatalogVersion = getCatalogVersion,
+                )
+            }
             item { UpdateCard() }
             item { SetupGuideCard(onClick = onOpenSetup) }
         }
@@ -762,6 +773,8 @@ private fun Arrow(symbol: String, enabled: Boolean) {
 private fun AboutCard(
     onPair: suspend (String) -> Boolean,
     isActivated: Boolean,
+    onSync: suspend () -> com.shieldstream.tv.domain.CustomCatalogRepository.SyncResult,
+    getCatalogVersion: () -> String?,
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -770,6 +783,8 @@ private fun AboutCard(
     var showPinDialog by remember { mutableStateOf(false) }
     var pinError by remember { mutableStateOf<String?>(null) }
     var activatedState by remember { mutableStateOf(isActivated) }
+    var catalogVersion by remember { mutableStateOf(getCatalogVersion()) }
+    var isSyncing by remember { mutableStateOf(false) }
 
     val version = remember {
         runCatching {
@@ -780,16 +795,40 @@ private fun AboutCard(
     val testing = context.packageName.endsWith(".debug")
     FocusCard(
         onClick = {
-            val now = System.currentTimeMillis()
-            if (now - lastClickTime < 1500L) {
-                clickCount++
+            if (activatedState) {
+                // Si ya está activado: un clic comprueba/fuerza actualización de catálogo
+                if (!isSyncing) {
+                    isSyncing = true
+                    coroutineScope.launch {
+                        when (val res = onSync()) {
+                            is com.shieldstream.tv.domain.CustomCatalogRepository.SyncResult.Updated -> {
+                                catalogVersion = res.version
+                                android.widget.Toast.makeText(context, tr("Catálogo actualizado a v${res.version}", "Catalog updated to v${res.version}"), android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                            is com.shieldstream.tv.domain.CustomCatalogRepository.SyncResult.UpToDate -> {
+                                catalogVersion = res.version
+                                android.widget.Toast.makeText(context, tr("Catálogo al día (v${res.version})", "Catalog up to date (v${res.version})"), android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                            is com.shieldstream.tv.domain.CustomCatalogRepository.SyncResult.Error -> {
+                                android.widget.Toast.makeText(context, tr("Error de sincronización: ${res.message}", "Sync error: ${res.message}"), android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        isSyncing = false
+                    }
+                }
             } else {
-                clickCount = 1
-            }
-            lastClickTime = now
-            if (clickCount >= 5) {
-                clickCount = 0
-                showPinDialog = true
+                // Si no está activado: 5 clics para el PIN
+                val now = System.currentTimeMillis()
+                if (now - lastClickTime < 1500L) {
+                    clickCount++
+                } else {
+                    clickCount = 1
+                }
+                lastClickTime = now
+                if (clickCount >= 5) {
+                    clickCount = 0
+                    showPinDialog = true
+                }
             }
         }
     ) { _ ->
@@ -801,8 +840,13 @@ private fun AboutCard(
                     color = Color.White,
                 )
                 Text(
-                    if (activatedState) tr("Catálogo conectado · fuentes directas activas", "Connected catalog · direct stream active")
-                    else tr("Catálogo de TMDB · fuentes de Torrentio · reproducción con Real-Debrid", "Catalog by TMDB · sources from Torrentio · playback via Real-Debrid"),
+                    if (activatedState) {
+                        val vText = catalogVersion?.let { " · v$it" } ?: ""
+                        if (isSyncing) tr("Comprobando actualizaciones de catálogo...", "Checking catalog updates...")
+                        else tr("Catálogo conectado$vText · fuentes directas activas (pulsa para buscar updates)", "Connected catalog$vText · direct streams active (click to sync)")
+                    } else {
+                        tr("Catálogo de TMDB · fuentes de Torrentio · reproducción con Real-Debrid", "Catalog by TMDB · sources from Torrentio · playback via Real-Debrid")
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (activatedState) Color(0xFF4CAF50) else Muted,
                 )
@@ -822,6 +866,7 @@ private fun AboutCard(
                     val ok = onPair(pin)
                     if (ok) {
                         activatedState = true
+                        catalogVersion = getCatalogVersion()
                         showPinDialog = false
                         pinError = null
                         android.widget.Toast.makeText(context, tr("Fuentes sincronizadas", "Sources synchronized"), android.widget.Toast.LENGTH_SHORT).show()
