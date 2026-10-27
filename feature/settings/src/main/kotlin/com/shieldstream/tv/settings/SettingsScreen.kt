@@ -30,11 +30,15 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -113,6 +117,8 @@ fun SettingsScreen(
                     onLanguage = { language -> viewModel.setLanguage(language) { restartApp(context) } },
                     providers = providers,
                     onToggleProvider = viewModel::toggleProvider,
+                    onPairCustomCatalog = viewModel::pairCustomCatalog,
+                    isCustomCatalogActivated = viewModel.isCustomCatalogActivated,
                 )
                 s.editor?.let { editor ->
                     KeyEditorDialog(
@@ -138,6 +144,8 @@ private fun SettingsList(
     onLanguage: (AppLanguage) -> Unit,
     providers: Set<SourceProvider>,
     onToggleProvider: (SourceProvider) -> Unit,
+    onPairCustomCatalog: suspend (String) -> Boolean,
+    isCustomCatalogActivated: Boolean,
 ) {
     val requesters = remember { ApiService.entries.associateWith { FocusRequester() } }
     val debridRequester = remember { FocusRequester() }
@@ -233,7 +241,7 @@ private fun SettingsList(
             item { AutoNextCard() }
             item { BufferCard(seconds = state.bufferSeconds, onChange = onBuffer) }
             item { SectionTitle(tr("Acerca de", "About")) }
-            item { AboutCard() }
+            item { AboutCard(onPair = onPairCustomCatalog, isActivated = isCustomCatalogActivated) }
             item { UpdateCard() }
             item { SetupGuideCard(onClick = onOpenSetup) }
         }
@@ -751,8 +759,18 @@ private fun Arrow(symbol: String, enabled: Boolean) {
 }
 
 @Composable
-private fun AboutCard() {
+private fun AboutCard(
+    onPair: suspend (String) -> Boolean,
+    isActivated: Boolean,
+) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var clickCount by remember { mutableIntStateOf(0) }
+    var lastClickTime by remember { mutableLongStateOf(0L) }
+    var showPinDialog by remember { mutableStateOf(false) }
+    var pinError by remember { mutableStateOf<String?>(null) }
+    var activatedState by remember { mutableStateOf(isActivated) }
+
     val version = remember {
         runCatching {
             @Suppress("DEPRECATION")
@@ -760,7 +778,21 @@ private fun AboutCard() {
         }.getOrNull() ?: "?"
     }
     val testing = context.packageName.endsWith(".debug")
-    FocusCard { _ ->
+    FocusCard(
+        onClick = {
+            val now = System.currentTimeMillis()
+            if (now - lastClickTime < 1500L) {
+                clickCount++
+            } else {
+                clickCount = 1
+            }
+            lastClickTime = now
+            if (clickCount >= 5) {
+                clickCount = 0
+                showPinDialog = true
+            }
+        }
+    ) { _ ->
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
@@ -769,13 +801,40 @@ private fun AboutCard() {
                     color = Color.White,
                 )
                 Text(
-                    tr("Catálogo de TMDB · fuentes de Torrentio · reproducción con Real-Debrid", "Catalog by TMDB · sources from Torrentio · playback via Real-Debrid"),
+                    if (activatedState) tr("Catálogo conectado · fuentes directas activas", "Connected catalog · direct stream active")
+                    else tr("Catálogo de TMDB · fuentes de Torrentio · reproducción con Real-Debrid", "Catalog by TMDB · sources from Torrentio · playback via Real-Debrid"),
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Muted,
+                    color = if (activatedState) Color(0xFF4CAF50) else Muted,
                 )
             }
             Text(tr("Versión $version", "Version $version"), style = MaterialTheme.typography.titleMedium, color = Muted)
         }
+    }
+
+    if (showPinDialog) {
+        com.shieldstream.tv.settings.profiles.PinDialog(
+            title = tr("Índice de fuentes", "Source Index"),
+            subtitle = tr("Introduce el PIN de sincronización", "Enter sync PIN"),
+            error = pinError,
+            length = 6,
+            onPin = { pin ->
+                coroutineScope.launch {
+                    val ok = onPair(pin)
+                    if (ok) {
+                        activatedState = true
+                        showPinDialog = false
+                        pinError = null
+                        android.widget.Toast.makeText(context, tr("Fuentes sincronizadas", "Sources synchronized"), android.widget.Toast.LENGTH_SHORT).show()
+                    } else {
+                        pinError = tr("PIN incorrecto o no disponible", "Invalid or unavailable PIN")
+                    }
+                }
+            },
+            onDismiss = {
+                showPinDialog = false
+                pinError = null
+            }
+        )
     }
 }
 

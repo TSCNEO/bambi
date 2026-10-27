@@ -53,6 +53,7 @@ fun PinDialog(
     title: String,
     subtitle: String,
     error: String?,
+    length: Int = ProfilePin.LENGTH,
     onPin: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -67,9 +68,9 @@ fun PinDialog(
     // Un error nuevo (PIN incorrecto) vacía lo escrito para volver a intentarlo.
     LaunchedEffect(error) { if (error != null) pin = "" }
     fun type(d: Char) {
-        if (pin.length >= ProfilePin.LENGTH) return
+        if (pin.length >= length) return
         pin += d
-        if (pin.length == ProfilePin.LENGTH) {
+        if (pin.length == length) {
             val done = pin
             pin = ""
             onPin(done)
@@ -109,7 +110,7 @@ fun PinDialog(
             Text(subtitle, color = ProfileMuted, fontSize = 15.sp)
             Spacer(Modifier.height(18.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                repeat(ProfilePin.LENGTH) { i ->
+                repeat(length) { i ->
                     Box(
                         Modifier
                             .size(16.dp)

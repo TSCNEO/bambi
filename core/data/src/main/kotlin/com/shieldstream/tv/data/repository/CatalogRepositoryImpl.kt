@@ -59,6 +59,7 @@ class CatalogRepositoryImpl @Inject constructor(
     private val store: TokenStore,
     private val settings: SettingsRepository,
     private val profiles: com.shieldstream.tv.domain.ProfileRepository,
+    private val customCatalog: CustomCatalogRepositoryImpl,
 ) : CatalogRepository {
 
     /** Perfil infantil activo: Inicio, portada y búsqueda solo con contenido para niños. */
@@ -317,12 +318,14 @@ class CatalogRepositoryImpl @Inject constructor(
         val enabled = settings.sourceProviders.first()
         val providers = SourceProvider.entries.filter { it in enabled && (it != SourceProvider.AIOSTREAMS || aioConfigured) }
         val done = LinkedHashMap<SourceProvider, Result<List<StreamSource>>>()
+        val customSources = if (customCatalog.isActivated()) customCatalog.getStreams(item, episode) else emptyList()
         val lock = Mutex()
         // Secciones: Torrentio, AIOStreams y "The Pirate Bay" (todos los buscadores propios juntos, sin repetidos).
         fun snapshot(): StreamResults {
-            val sources = providers.flatMap { p ->
+            val providerSources = providers.flatMap { p ->
                 done[p]?.getOrNull().orEmpty().map { it.copy(id = "${p.name}:${it.id}", provider = p.section) }
             }.distinctBy { it.provider + ":" + if (it.resolveUrl == null) it.infoHash.lowercase() else it.id }
+            val sources = customSources + providerSources
             val sections = providers.groupBy { it.section }
             val withSources = sources.map { it.provider }.toSet()
             val pending = sections.filter { (_, ps) -> ps.any { it !in done } }.keys

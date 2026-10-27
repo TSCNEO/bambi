@@ -31,8 +31,13 @@ class ResolveStreamUseCase(
     private val torrentio: TorrentioLinkResolver,
 ) {
     operator fun invoke(source: StreamSource): Flow<ResolveState> = flow {
-        source.directUrl?.let {
-            emit(ResolveState.Ready(it))
+        source.directUrl?.let { link ->
+            if (link.contains("1fichier.com", ignoreCase = true) || link.contains("uptobox.com", ignoreCase = true)) {
+                emit(ResolveState.Progress(tr("Desbloqueando enlace…", "Unrestricting link…")))
+                emit(ResolveState.Ready(realDebrid.unrestrict(link)))
+            } else {
+                emit(ResolveState.Ready(link))
+            }
             return@flow
         }
 

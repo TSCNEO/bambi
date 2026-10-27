@@ -67,10 +67,11 @@ android {
     // actualizar "Bambi" sin desinstalarla (y perder el progreso).
     signingConfigs {
         create("release") {
-            storeFile = rootProject.file(localProps.getProperty("releaseStoreFile") ?: "keystore/butaca.keystore")
-            storePassword = localProps.getProperty("releaseStorePassword") ?: "android"
-            keyAlias = localProps.getProperty("releaseKeyAlias") ?: "androiddebugkey"
-            keyPassword = localProps.getProperty("releaseKeyPassword") ?: "android"
+            val ksPath = System.getenv("KEYSTORE_PATH")
+            storeFile = if (ksPath != null) file(ksPath) else rootProject.file(localProps.getProperty("releaseStoreFile") ?: "keystore/butaca.keystore")
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: localProps.getProperty("releaseStorePassword") ?: "android"
+            keyAlias = System.getenv("KEY_ALIAS") ?: localProps.getProperty("releaseKeyAlias") ?: "androiddebugkey"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: localProps.getProperty("releaseKeyPassword") ?: "android"
         }
     }
 

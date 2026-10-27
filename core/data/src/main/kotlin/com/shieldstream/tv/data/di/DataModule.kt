@@ -81,4 +81,8 @@ abstract class DataModule {
     @Binds
     @Singleton
     abstract fun bindMyListRepository(impl: MyListRepositoryImpl): MyListRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindCustomCatalogRepository(impl: CustomCatalogRepositoryImpl): com.shieldstream.tv.domain.CustomCatalogRepository
 }

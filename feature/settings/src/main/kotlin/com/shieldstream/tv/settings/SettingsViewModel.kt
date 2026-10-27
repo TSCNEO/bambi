@@ -64,7 +64,12 @@ sealed interface SettingsUiState {
 class SettingsViewModel @Inject constructor(
     private val apiKeys: ApiKeysRepository,
     private val settings: SettingsRepository,
+    private val customCatalog: com.shieldstream.tv.domain.CustomCatalogRepository,
 ) : ViewModel() {
+
+    val isCustomCatalogActivated: Boolean get() = customCatalog.isActivated()
+
+    suspend fun pairCustomCatalog(pin: String): Boolean = customCatalog.pairWithPin(pin)
 
     private val statuses = MutableStateFlow<Map<ApiService, ServiceStatus>>(emptyMap())
     private val editor = MutableStateFlow<KeyEditor?>(null)

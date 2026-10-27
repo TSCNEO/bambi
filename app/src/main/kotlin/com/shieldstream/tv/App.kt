@@ -7,6 +7,7 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import com.shieldstream.tv.data.security.TokenStore
 import dagger.hilt.android.HiltAndroidApp
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltAndroidApp
@@ -17,6 +18,9 @@ class App : Application(), ImageLoaderFactory {
 
     @Inject
     lateinit var tokenStore: TokenStore
+
+    @Inject
+    lateinit var customCatalog: com.shieldstream.tv.data.repository.CustomCatalogRepositoryImpl
 
     override fun onCreate() {
         // Idioma ANTES de super.onCreate(): ahí Hilt crea los singletons (repositorios, cliente de TMDB…) y
@@ -30,6 +34,10 @@ class App : Application(), ImageLoaderFactory {
         tokenStore.seedOnce(TokenStore.RD_TOKEN, BuildConfig.RD_TOKEN)
         tokenStore.seedOnce(TokenStore.TMDB_KEY, BuildConfig.TMDB_API_KEY)
         tokenStore.seedOnce(TokenStore.SUBDL_KEY, BuildConfig.SUBDL_API_KEY)
+
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            customCatalog.checkAndUpdate()
+        }
     }
 
     override fun newImageLoader(): ImageLoader = imageLoader
