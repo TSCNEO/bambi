@@ -21,6 +21,9 @@ import okhttp3.Request
 import java.io.File
 import java.security.MessageDigest
 import java.util.zip.GZIPInputStream
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -33,7 +36,11 @@ class CustomCatalogRepositoryImpl @Inject constructor(
 ) : CustomCatalogRepository {
     private val client = base.newBuilder().build()
     private val dbFile: File get() = File(context.filesDir, "catalog.db")
-    private val versionJsonUrl = "https://gist.githubusercontent.com/TSCNEO/4870a0717ba7f27f5544bb872de6f5a7/raw/version.json"
+    private val versionJsonUrl = "https://gist.githubusercontent.com/raw/4870a0717ba7f27f5544bb872de6f5a7/version.json"
+
+    companion object {
+        private const val VAULT_SALT = "bambi_vault_salt_#984x"
+    }
 
     override fun isActivated(): Boolean = tokenStore.getSecret("custom_catalog_pin") != null
 
@@ -44,25 +51,32 @@ class CustomCatalogRepositoryImpl @Inject constructor(
                 if (!resp.isSuccessful) return@runCatching false
                 val body = resp.body?.string() ?: return@runCatching false
                 val root = json.parseToJsonElement(body).jsonObject
-                val pairingPin = root["pairing"]?.jsonObject?.get("pin")?.jsonPrimitive?.content ?: "847201"
-                if (pin != pairingPin && pin != "847201") return@runCatching false
-
                 val artifacts = root["artifacts"]?.jsonObject ?: return@runCatching false
-                val gzUrl = artifacts["gz_url"]?.jsonPrimitive?.content ?: return@runCatching false
-                val expectedSha = artifacts["sha256_gz"]?.jsonPrimitive?.content ?: ""
 
-                // Download gz
-                val gzReq = Request.Builder().url(gzUrl).build()
-                client.newCall(gzReq).execute().use { gzResp ->
-                    if (!gzResp.isSuccessful) return@runCatching false
-                    val bytes = gzResp.body?.bytes() ?: return@runCatching false
+                val binUrl = artifacts["bin_url"]?.jsonPrimitive?.content
+                    ?: artifacts["url"]?.jsonPrimitive?.content
+                    ?: artifacts["gz_url"]?.jsonPrimitive?.content
+                    ?: return@runCatching false
+                val expectedSha = artifacts["sha256_bin"]?.jsonPrimitive?.content
+                    ?: artifacts["sha256"]?.jsonPrimitive?.content
+                    ?: artifacts["sha256_gz"]?.jsonPrimitive?.content
+                    ?: ""
+
+                // Download encrypted bin
+                val binReq = Request.Builder().url(binUrl).build()
+                client.newCall(binReq).execute().use { binResp ->
+                    if (!binResp.isSuccessful) return@runCatching false
+                    val bytes = binResp.body?.bytes() ?: return@runCatching false
                     val sha = sha256(bytes)
                     if (expectedSha.isNotBlank() && sha != expectedSha) {
                         Log.w("CustomCatalog", "SHA mismatch: expected $expectedSha, got $sha")
                     }
 
+                    // Decrypt AES-256 payload using PIN + SALT
+                    val decryptedGz = decryptCatalog(bytes, pin)
+
                     // Extract GZIP to dbFile
-                    GZIPInputStream(bytes.inputStream()).use { gis ->
+                    GZIPInputStream(decryptedGz.inputStream()).use { gis ->
                         dbFile.outputStream().use { fos ->
                             gis.copyTo(fos)
                         }
@@ -70,7 +84,7 @@ class CustomCatalogRepositoryImpl @Inject constructor(
 
                     tokenStore.setSecret("custom_catalog_pin", pin)
                     tokenStore.setSecret("custom_catalog_sha", sha)
-                    Log.i("CustomCatalog", "Paired and catalog.db extracted successfully")
+                    Log.i("CustomCatalog", "Paired, decrypted and catalog.db extracted successfully")
                     true
                 }
             }
@@ -82,6 +96,7 @@ class CustomCatalogRepositoryImpl @Inject constructor(
 
     override suspend fun checkAndUpdate() {
         if (!isActivated()) return
+        val pin = tokenStore.getSecret("custom_catalog_pin") ?: return
         withContext(Dispatchers.IO) {
             runCatching {
                 val req = Request.Builder().url(versionJsonUrl).build()
@@ -90,20 +105,27 @@ class CustomCatalogRepositoryImpl @Inject constructor(
                     val body = resp.body?.string() ?: return@runCatching
                     val root = json.parseToJsonElement(body).jsonObject
                     val artifacts = root["artifacts"]?.jsonObject ?: return@runCatching
-                    val gzUrl = artifacts["gz_url"]?.jsonPrimitive?.content ?: return@runCatching
-                    val expectedSha = artifacts["sha256_gz"]?.jsonPrimitive?.content ?: return@runCatching
+                    val binUrl = artifacts["bin_url"]?.jsonPrimitive?.content
+                        ?: artifacts["url"]?.jsonPrimitive?.content
+                        ?: artifacts["gz_url"]?.jsonPrimitive?.content
+                        ?: return@runCatching
+                    val expectedSha = artifacts["sha256_bin"]?.jsonPrimitive?.content
+                        ?: artifacts["sha256"]?.jsonPrimitive?.content
+                        ?: artifacts["sha256_gz"]?.jsonPrimitive?.content
+                        ?: return@runCatching
 
                     val currentSha = tokenStore.getSecret("custom_catalog_sha")
                     if (currentSha == expectedSha && dbFile.exists()) return@runCatching
 
                     Log.i("CustomCatalog", "Catalog update available, downloading...")
-                    val gzReq = Request.Builder().url(gzUrl).build()
-                    client.newCall(gzReq).execute().use { gzResp ->
-                        if (!gzResp.isSuccessful) return@runCatching
-                        val bytes = gzResp.body?.bytes() ?: return@runCatching
+                    val binReq = Request.Builder().url(binUrl).build()
+                    client.newCall(binReq).execute().use { binResp ->
+                        if (!binResp.isSuccessful) return@runCatching
+                        val bytes = binResp.body?.bytes() ?: return@runCatching
                         val sha = sha256(bytes)
 
-                        GZIPInputStream(bytes.inputStream()).use { gis ->
+                        val decryptedGz = decryptCatalog(bytes, pin)
+                        GZIPInputStream(decryptedGz.inputStream()).use { gis ->
                             dbFile.outputStream().use { fos ->
                                 gis.copyTo(fos)
                             }
@@ -114,6 +136,18 @@ class CustomCatalogRepositoryImpl @Inject constructor(
                 }
             }.onFailure { Log.w("CustomCatalog", "checkAndUpdate failed: ${it.message}") }
         }
+    }
+
+    private fun decryptCatalog(encryptedBytes: ByteArray, pin: String): ByteArray {
+        val md = MessageDigest.getInstance("SHA-256")
+        val keyBytes = md.digest((VAULT_SALT + pin).toByteArray(Charsets.UTF_8))
+        val secretKey = SecretKeySpec(keyBytes, "AES")
+        val iv = encryptedBytes.copyOfRange(0, 16)
+        val cipherText = encryptedBytes.copyOfRange(16, encryptedBytes.size)
+        val ivSpec = IvParameterSpec(iv)
+        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
+        return cipher.doFinal(cipherText)
     }
 
     private fun sha256(bytes: ByteArray): String {
