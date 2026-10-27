@@ -5,6 +5,9 @@ import android.database.sqlite.SQLiteDatabase
 import android.util.Log
 import com.shieldstream.tv.data.security.TokenStore
 import com.shieldstream.tv.domain.CustomCatalogRepository
+import com.shieldstream.tv.domain.DebridService
+import com.shieldstream.tv.domain.RealDebridRepository
+import com.shieldstream.tv.domain.SettingsRepository
 import com.shieldstream.tv.model.CatalogItem
 import com.shieldstream.tv.model.Episode
 import com.shieldstream.tv.model.HdrType
@@ -12,6 +15,7 @@ import com.shieldstream.tv.model.Quality
 import com.shieldstream.tv.model.StreamSource
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -19,6 +23,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.zip.GZIPInputStream
 import javax.crypto.Cipher
@@ -33,6 +38,8 @@ class CustomCatalogRepositoryImpl @Inject constructor(
     base: OkHttpClient,
     private val tokenStore: TokenStore,
     private val json: Json,
+    private val settings: SettingsRepository,
+    private val realDebrid: RealDebridRepository,
 ) : CustomCatalogRepository {
     private val client = base.newBuilder().build()
     private val dbFile: File get() = File(context.filesDir, "catalog.db")
@@ -172,6 +179,43 @@ class CustomCatalogRepositoryImpl @Inject constructor(
                 forceUpdate()
             }.onFailure { Log.w("CustomCatalog", "checkAndUpdate failed: ${it.message}") }
         }
+    }
+
+    override suspend fun unrestrict(link: String): String = withContext(Dispatchers.IO) {
+        val adKey = tokenStore.getSecret("alldebrid_key")?.trim()
+        val rdToken = runCatching { settings.token.first()?.trim() }.getOrNull()
+        val debridService = runCatching { settings.debridService.first() }.getOrDefault(DebridService.REAL_DEBRID)
+
+        // 1. Si está seleccionado AllDebrid o tiene clave de AllDebrid sin clave de RealDebrid
+        if (debridService == DebridService.ALLDEBRID || (!adKey.isNullOrBlank() && rdToken.isNullOrBlank())) {
+            if (adKey.isNullOrBlank()) error("Clave de AllDebrid no configurada en Ajustes")
+            val encoded = URLEncoder.encode(link, "UTF-8")
+            val url = "https://api.alldebrid.com/v4/link/unlock?agent=bambi&apikey=$adKey&link=$encoded"
+            val req = Request.Builder().url(url).build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) error("Error red AllDebrid: HTTP ${resp.code}")
+                val body = resp.body?.string() ?: error("Respuesta vacía de AllDebrid")
+                val root = json.parseToJsonElement(body).jsonObject
+                val status = root["status"]?.jsonPrimitive?.content
+                if (status != "success") {
+                    val errMsg = root["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
+                        ?: root["error"]?.jsonObject?.get("code")?.jsonPrimitive?.content
+                        ?: "Error desconocido de AllDebrid"
+                    error("AllDebrid: $errMsg")
+                }
+                val direct = root["data"]?.jsonObject?.get("link")?.jsonPrimitive?.content
+                    ?: error("AllDebrid no devolvió enlace de descarga")
+                Log.i("CustomCatalog", "Enlace desbloqueado con éxito por AllDebrid")
+                return@withContext direct
+            }
+        }
+
+        // 2. Si tiene Real-Debrid
+        if (!rdToken.isNullOrBlank() || debridService == DebridService.REAL_DEBRID) {
+            return@withContext realDebrid.unrestrict(link)
+        }
+
+        error("No hay servicio Debrid configurado con clave válida")
     }
 
     private fun decryptCatalog(encryptedBytes: ByteArray, pin: String): ByteArray {

@@ -1,5 +1,6 @@
 package com.shieldstream.tv.data.di
 
+import com.shieldstream.tv.domain.CustomCatalogRepository
 import com.shieldstream.tv.domain.PrioritizeSourcesUseCase
 import com.shieldstream.tv.domain.RealDebridRepository
 import com.shieldstream.tv.domain.ResolveStreamUseCase
@@ -25,7 +26,8 @@ object UseCaseModule {
     fun provideResolveStreamUseCase(
         repo: RealDebridRepository,
         torrentio: TorrentioLinkResolver,
-    ): ResolveStreamUseCase = ResolveStreamUseCase(repo, torrentio)
+        customCatalog: CustomCatalogRepository,
+    ): ResolveStreamUseCase = ResolveStreamUseCase(repo, torrentio, customCatalog)
 
     @Provides
     @Singleton

@@ -29,12 +29,15 @@ import kotlinx.coroutines.withContext
 class ResolveStreamUseCase(
     private val realDebrid: RealDebridRepository,
     private val torrentio: TorrentioLinkResolver,
+    private val customCatalog: CustomCatalogRepository,
 ) {
     operator fun invoke(source: StreamSource): Flow<ResolveState> = flow {
         source.directUrl?.let { link ->
             if (link.contains("1fichier.com", ignoreCase = true) || link.contains("uptobox.com", ignoreCase = true)) {
                 emit(ResolveState.Progress(tr("Desbloqueando enlace…", "Unrestricting link…")))
-                emit(ResolveState.Ready(realDebrid.unrestrict(link)))
+                runCatching { customCatalog.unrestrict(link) }
+                    .onSuccess { emit(ResolveState.Ready(it)) }
+                    .onFailure { emit(ResolveState.Failed(it.message ?: tr("Error desbloqueando enlace", "Error unrestricting link"))) }
             } else {
                 emit(ResolveState.Ready(link))
             }

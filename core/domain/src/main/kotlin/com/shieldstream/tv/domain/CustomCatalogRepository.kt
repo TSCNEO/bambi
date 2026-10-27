@@ -11,6 +11,7 @@ interface CustomCatalogRepository {
     suspend fun checkAndUpdate()
     suspend fun forceUpdate(): SyncResult
     suspend fun getStreams(item: CatalogItem, episode: Episode?): List<StreamSource>
+    suspend fun unrestrict(link: String): String
 
     sealed interface SyncResult {
         data class Updated(val version: String) : SyncResult
