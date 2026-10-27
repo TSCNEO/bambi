@@ -23,7 +23,12 @@ object AppModule {
     @Provides
     @Singleton
     fun provideAppVersion(): AppVersion =
-        AppVersion(name = BuildConfig.VERSION_NAME, isDebug = BuildConfig.DEBUG, updateRepo = "TSCNEO/bambi")
+        AppVersion(
+            name = BuildConfig.VERSION_NAME,
+            isDebug = BuildConfig.DEBUG,
+            updateRepo = "TSCNEO/bambi",
+            upstreamVersion = BuildConfig.UPSTREAM_VERSION,
+        )
 
     @Provides
     @Singleton

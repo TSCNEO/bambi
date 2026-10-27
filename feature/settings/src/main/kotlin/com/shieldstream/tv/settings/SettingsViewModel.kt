@@ -65,7 +65,12 @@ class SettingsViewModel @Inject constructor(
     private val apiKeys: ApiKeysRepository,
     private val settings: SettingsRepository,
     private val customCatalog: com.shieldstream.tv.domain.CustomCatalogRepository,
+    private val appVersion: com.shieldstream.tv.domain.AppVersion,
 ) : ViewModel() {
+
+    /** Versión base de grodri99/bambi sobre la que va este fork (vacío = no se muestra). */
+    val upstreamVersion: String get() = appVersion.upstreamVersion
+
 
     val isCustomCatalogActivated: Boolean get() = customCatalog.isActivated()
     fun getCatalogVersion(): String? = customCatalog.getCatalogVersion()

@@ -36,6 +36,21 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
+      # Versión base del repositorio upstream: se pasa a Gradle por entorno (BuildConfig.UPSTREAM_VERSION).
+      - name: Resolve upstream base version
+        run: |
+          git remote add upstream https://github.com/grodri99/bambi.git 2>/dev/null || true
+          git fetch upstream main --tags 2>/dev/null || true
+          UPSTREAM_TAG=$(git describe --tags --abbrev=0 upstream/main 2>/dev/null | sed 's/^v//')
+          if [ -z "$UPSTREAM_TAG" ]; then
+            UPSTREAM_TAG=$(cat upstream_version.txt 2>/dev/null | tr -d '[:space:]')
+          fi
+          if [ -z "$UPSTREAM_TAG" ]; then
+            UPSTREAM_TAG="1.0.6"
+          fi
+          echo "UPSTREAM_VERSION=$UPSTREAM_TAG" >> "$GITHUB_ENV"
+          echo "Upstream base version: $UPSTREAM_TAG"
+
       - name: Prepare Keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}

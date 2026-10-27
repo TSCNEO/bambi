@@ -27,6 +27,25 @@ val traktClientSecret: String = localProps.getProperty("traktClientSecret")?.tri
 // La misma Redirect URI que se puso al crear la app en developer.trakt.tv (las apps "Production" exigen https).
 val traktRedirectUri: String = localProps.getProperty("traktRedirectUri")?.trim() ?: "urn:ietf:wg:oauth:2.0:oob"
 
+// Versión base de grodri99/bambi (el repositorio del que salen las mejoras): se enseña en Ajustes como
+// "Versión 1.1.2 · base 1.0.6". Orden: variable de entorno (CI) → etiqueta de upstream/main → fichero versionado.
+fun getUpstreamVersion(): String {
+    System.getenv("UPSTREAM_VERSION")?.trim()?.takeIf { it.isNotEmpty() }?.let { return it.removePrefix("v") }
+    runCatching {
+        val proc = ProcessBuilder("git", "describe", "--tags", "--abbrev=0", "upstream/main")
+            .directory(rootProject.projectDir)
+            .redirectErrorStream(true)
+            .start()
+        val out = proc.inputStream.bufferedReader().readText().trim()
+        proc.waitFor()
+        out.removePrefix("v").takeIf { proc.exitValue() == 0 && it.isNotEmpty() && it != "upstream/main" }
+    }.getOrNull()?.let { return it }
+    rootProject.file("upstream_version.txt").takeIf { it.exists() }
+        ?.readText()?.trim()?.removePrefix("v")?.takeIf { it.isNotEmpty() }
+        ?.let { return it }
+    return "1.0.6"
+}
+
 android {
     namespace = "com.shieldstream.tv"
     compileSdk = 35
@@ -36,9 +55,11 @@ android {
         minSdk = 21
         targetSdk = 35
         // Al publicar una versión nueva: subir versionCode (+1) y versionName (1.0.1, 1.1.0…).
-        versionCode = 111
-        versionName = "1.1.1"
+        versionCode = 112
+        versionName = "1.1.2"
         manifestPlaceholders["appLabel"] = "@string/app_name"
+
+        buildConfigField("String", "UPSTREAM_VERSION", "\"${getUpstreamVersion()}\"")
 
         buildConfigField("String", "RD_TOKEN", "\"$rdToken\"")
         buildConfigField("String", "SUBDL_API_KEY", "\"$subdlApiKey\"")

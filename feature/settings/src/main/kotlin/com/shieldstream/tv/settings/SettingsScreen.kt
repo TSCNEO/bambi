@@ -121,6 +121,7 @@ fun SettingsScreen(
                     isCustomCatalogActivated = viewModel.isCustomCatalogActivated,
                     onSyncCustomCatalog = viewModel::syncCustomCatalog,
                     getCatalogVersion = viewModel::getCatalogVersion,
+                    upstreamVersion = viewModel.upstreamVersion,
                 )
                 s.editor?.let { editor ->
                     KeyEditorDialog(
@@ -150,6 +151,7 @@ private fun SettingsList(
     isCustomCatalogActivated: Boolean,
     onSyncCustomCatalog: suspend () -> com.shieldstream.tv.domain.CustomCatalogRepository.SyncResult,
     getCatalogVersion: () -> String?,
+    upstreamVersion: String,
 ) {
     val requesters = remember { ApiService.entries.associateWith { FocusRequester() } }
     val debridRequester = remember { FocusRequester() }
@@ -251,6 +253,7 @@ private fun SettingsList(
                     isActivated = isCustomCatalogActivated,
                     onSync = onSyncCustomCatalog,
                     getCatalogVersion = getCatalogVersion,
+                    upstreamVersion = upstreamVersion,
                 )
             }
             item { UpdateCard() }
@@ -775,6 +778,7 @@ private fun AboutCard(
     isActivated: Boolean,
     onSync: suspend () -> com.shieldstream.tv.domain.CustomCatalogRepository.SyncResult,
     getCatalogVersion: () -> String?,
+    upstreamVersion: String,
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -851,7 +855,12 @@ private fun AboutCard(
                     color = if (activatedState) Color(0xFF4CAF50) else Muted,
                 )
             }
-            Text(tr("Versión $version", "Version $version"), style = MaterialTheme.typography.titleMedium, color = Muted)
+            val upstreamText = if (upstreamVersion.isNotBlank()) " · base $upstreamVersion" else ""
+            Text(
+                tr("Versión $version$upstreamText", "Version $version$upstreamText"),
+                style = MaterialTheme.typography.titleMedium,
+                color = Muted,
+            )
         }
     }
 

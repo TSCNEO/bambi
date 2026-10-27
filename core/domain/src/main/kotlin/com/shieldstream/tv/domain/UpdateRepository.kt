@@ -9,6 +9,8 @@ data class AppVersion(
     val isDebug: Boolean,
     /** Repositorio de GitHub con las releases, "usuario/repo". */
     val updateRepo: String,
+    /** Versión base del repositorio upstream (grodri99/bambi) sobre la que va este fork. "" = desconocida. */
+    val upstreamVersion: String = "",
 )
 
 /** Versión publicada en GitHub. */

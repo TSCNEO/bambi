@@ -25,6 +25,29 @@ jobs:
       - name: Sync with Upstream
         run: |
           git remote add upstream https://github.com/grodri99/bambi.git || true
-          git fetch upstream main
+          git fetch upstream main --tags
           git merge --no-edit upstream/main || (echo "Merge conflict detected; manual review required" && exit 1)
+
+      # La versión base se lee de la última etiqueta de upstream (grodri99/bambi) y se versiona en
+      # upstream_version.txt, para que la app pueda enseñar "Versión X · base Y" en Ajustes.
+      - name: Track upstream base version
+        run: |
+          UPSTREAM_TAG=$(git describe --tags --abbrev=0 upstream/main 2>/dev/null | sed 's/^v//')
+          if [ -z "$UPSTREAM_TAG" ]; then
+            echo "No upstream tag found; keeping current upstream_version.txt"
+            exit 0
+          fi
+          echo "Upstream base version: $UPSTREAM_TAG"
+          PREV=$(cat upstream_version.txt 2>/dev/null || echo "")
+          if [ "$PREV" = "$UPSTREAM_TAG" ]; then
+            echo "upstream_version.txt already at $UPSTREAM_TAG; nothing to commit"
+            exit 0
+          fi
+          printf '%s\n' "$UPSTREAM_TAG" > upstream_version.txt
+          git add upstream_version.txt
+          git commit -m "chore(versioning): track upstream base version $UPSTREAM_TAG"
           git push origin main
+          echo "upstream_version.txt updated: ${PREV:-none} -> $UPSTREAM_TAG"
+
+      - name: Push merge
+        run: git push origin main
