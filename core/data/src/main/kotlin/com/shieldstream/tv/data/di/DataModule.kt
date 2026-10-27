@@ -23,7 +23,9 @@ import com.shieldstream.tv.domain.UpdateRepository
 import com.shieldstream.tv.data.skip.IntroDbRepository
 import com.shieldstream.tv.domain.SkipSegmentsRepository
 import com.shieldstream.tv.data.repository.MyListRepositoryImpl
+import com.shieldstream.tv.data.repository.CustomCatalogRepositoryImpl
 import com.shieldstream.tv.domain.MyListRepository
+import com.shieldstream.tv.domain.CustomCatalogRepository
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -84,5 +86,5 @@ abstract class DataModule {
 
     @Binds
     @Singleton
-    abstract fun bindCustomCatalogRepository(impl: CustomCatalogRepositoryImpl): com.shieldstream.tv.domain.CustomCatalogRepository
+    abstract fun bindCustomCatalogRepository(impl: CustomCatalogRepositoryImpl): CustomCatalogRepository
 }
