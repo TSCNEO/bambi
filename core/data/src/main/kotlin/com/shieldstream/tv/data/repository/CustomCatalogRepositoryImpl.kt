@@ -245,7 +245,11 @@ class CustomCatalogRepositoryImpl @Inject constructor(
         runCatching {
             SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY).use { db ->
                 val (query, args) = if (isTv) {
-                    "SELECT quality, lang, link, '' AS title FROM episodes WHERE tmdb_id = ? AND season = ? AND episode = ?" to arrayOf(tmdbId.toString(), season.toString(), epNum.toString())
+                    val hasTitle = runCatching {
+                        db.rawQuery("SELECT title FROM episodes LIMIT 0", null).use { true }
+                    }.getOrDefault(false)
+                    val titleCol = if (hasTitle) "title" else "'' AS title"
+                    "SELECT quality, lang, link, $titleCol FROM episodes WHERE tmdb_id = ? AND season = ? AND episode = ?" to arrayOf(tmdbId.toString(), season.toString(), epNum.toString())
                 } else {
                     "SELECT quality, lang, link, title FROM movies WHERE tmdb_id = ?" to arrayOf(tmdbId.toString())
                 }
@@ -255,21 +259,48 @@ class CustomCatalogRepositoryImpl @Inject constructor(
                         val quality = cursor.getString(0) ?: "1080p"
                         val lang = cursor.getString(1) ?: "esp"
                         val link = cursor.getString(2) ?: continue
-                        val title = cursor.getString(3)?.takeIf { it.isNotBlank() } ?: item.title
+                        val rawTitle = cursor.getString(3)?.takeIf { it.isNotBlank() }
 
-                        val isHdr = quality.lowercase().contains("hdr")
-                        val hdrType = if (isHdr) HdrType.HDR10 else HdrType.SDR
+                        val qLower = quality.lowercase()
+                        val isRemux = qLower.contains("remux") || rawTitle?.contains("remux", ignoreCase = true) == true
+                        val isDv = qLower.contains("dv") || qLower.contains("dolby")
+                        val isHdr10Plus = qLower.contains("hdr10+") || qLower.contains("hdr10plus")
+                        val isHdr = qLower.contains("hdr")
+
+                        val hdrType = when {
+                            isDv -> HdrType.DOLBY_VISION
+                            isHdr10Plus -> HdrType.HDR10_PLUS
+                            isHdr -> HdrType.HDR10
+                            else -> HdrType.SDR
+                        }
+
+                        val q = Quality.fromName(quality)
                         val langCode = if (lang.contains("esp", true) || lang.contains("lat", true)) "ES" else lang.uppercase()
+
+                        val title = when {
+                            !rawTitle.isNullOrBlank() -> rawTitle
+                            isRemux -> "REMUX"
+                            else -> item.title
+                        }
+
+                        val sizeBytes = when {
+                            isRemux && q == Quality.UHD_2160 -> 45L * 1024 * 1024 * 1024
+                            q == Quality.UHD_2160 -> 18L * 1024 * 1024 * 1024
+                            isRemux && q == Quality.FHD_1080 -> 25L * 1024 * 1024 * 1024
+                            q == Quality.FHD_1080 -> 4L * 1024 * 1024 * 1024
+                            q == Quality.HD_720 -> 2L * 1024 * 1024 * 1024
+                            else -> 800L * 1024 * 1024
+                        }
 
                         list += StreamSource(
                             id = "custom:${link.hashCode()}",
                             title = title,
-                            infoHash = "",
+                            infoHash = "direct_${link.hashCode()}",
                             fileIdx = null,
                             magnet = "",
-                            quality = Quality.fromName(quality),
+                            quality = q,
                             hdrType = hdrType,
-                            sizeBytes = 0L,
+                            sizeBytes = sizeBytes,
                             seeders = null,
                             isCached = true,
                             directUrl = link,

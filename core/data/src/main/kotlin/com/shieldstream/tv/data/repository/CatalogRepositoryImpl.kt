@@ -305,7 +305,22 @@ class CatalogRepositoryImpl @Inject constructor(
     }
 
     override fun getStreams(item: CatalogItem, episode: Episode?): Flow<StreamResults> = channelFlow {
-        val imdbId = item.imdbId ?: resolveImdb(item) ?: error(tr("No se encontró el id de IMDb de «${item.title}»", "Couldn't find the IMDb id for “${item.title}”"))
+        val customSources = if (customCatalog.isActivated()) {
+            runCatching { customCatalog.getStreams(item, episode) }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
+
+        val imdbId = item.imdbId ?: resolveImdb(item)
+        if (imdbId == null) {
+            if (customSources.isNotEmpty()) {
+                send(StreamResults(sources = customSources, unavailable = emptyMap(), pending = emptySet()))
+                return@channelFlow
+            } else {
+                error(tr("No se encontró el id de IMDb de «${item.title}»", "Couldn't find the IMDb id for “${item.title}”"))
+            }
+        }
+
         val (type, streamId) = if (item.type == MediaType.TV) {
             val ep = episode ?: error(tr("Elige un episodio", "Pick an episode"))
             "series" to "$imdbId:${ep.season}:${ep.number}"
@@ -318,7 +333,6 @@ class CatalogRepositoryImpl @Inject constructor(
         val enabled = settings.sourceProviders.first()
         val providers = SourceProvider.entries.filter { it in enabled && (it != SourceProvider.AIOSTREAMS || aioConfigured) }
         val done = LinkedHashMap<SourceProvider, Result<List<StreamSource>>>()
-        val customSources = if (customCatalog.isActivated()) customCatalog.getStreams(item, episode) else emptyList()
         val lock = Mutex()
         // Secciones: Torrentio, AIOStreams y "The Pirate Bay" (todos los buscadores propios juntos, sin repetidos).
         fun snapshot(): StreamResults {
