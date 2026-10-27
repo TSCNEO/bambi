@@ -53,15 +53,19 @@ class CustomCatalogRepositoryImpl @Inject constructor(
 
     override fun getCatalogVersion(): String? {
         val stored = tokenStore.getSecret("custom_catalog_version")
-        if (!stored.isNullOrBlank()) return stored
-        if (!dbFile.exists()) return null
-        return runCatching {
-            SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY).use { db ->
-                db.rawQuery("SELECT value FROM meta WHERE key = 'moria_version' OR key = 'version' LIMIT 1", null).use { cursor ->
-                    if (cursor.moveToFirst()) cursor.getString(0) else null
+        val updated = tokenStore.getSecret("custom_catalog_updated_at")
+        val ver = if (!stored.isNullOrBlank()) stored else {
+            if (!dbFile.exists()) return null
+            runCatching {
+                SQLiteDatabase.openDatabase(dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+                    db.rawQuery("SELECT value FROM meta WHERE key = 'moria_version' OR key = 'version' LIMIT 1", null).use { cursor ->
+                        if (cursor.moveToFirst()) cursor.getString(0) else null
+                    }
                 }
-            }
-        }.getOrNull()
+            }.getOrNull()
+        } ?: return null
+
+        return if (!updated.isNullOrBlank()) "$ver · $updated" else ver
     }
 
     override suspend fun pairWithPin(pin: String): Boolean = withContext(Dispatchers.IO) {
@@ -104,9 +108,11 @@ class CustomCatalogRepositoryImpl @Inject constructor(
                         }
                     }
 
+                    val nowStr = java.text.SimpleDateFormat("dd/MM HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
                     tokenStore.setSecret("custom_catalog_pin", pin)
                     tokenStore.setSecret("custom_catalog_sha", sha)
                     tokenStore.setSecret("custom_catalog_version", versionStr)
+                    tokenStore.setSecret("custom_catalog_updated_at", nowStr)
                     Log.i("CustomCatalog", "Paired, decrypted and catalog.db extracted successfully (v$versionStr)")
                     true
                 }
@@ -160,9 +166,11 @@ class CustomCatalogRepositoryImpl @Inject constructor(
                         }
                     }
 
+                    val nowStr = java.text.SimpleDateFormat("dd/MM HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
                     tokenStore.setSecret("custom_catalog_sha", sha)
                     tokenStore.setSecret("custom_catalog_version", versionStr)
-                    Log.i("CustomCatalog", "Catalog updated successfully to v$versionStr")
+                    tokenStore.setSecret("custom_catalog_updated_at", nowStr)
+                    Log.i("CustomCatalog", "Catalog updated successfully to v$versionStr ($nowStr)")
                     CustomCatalogRepository.SyncResult.Updated(versionStr)
                 }
             }
