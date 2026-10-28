@@ -1,4 +1,4 @@
-# Ingeniería de Auto Frame Rate (AFR) y Navegación de Pistas en Android TV (v1.1.5 - v1.1.7)
+# Ingeniería de Auto Frame Rate (AFR) y Navegación de Pistas en Android TV (v1.1.5 - v1.1.8)
 
 ## 1. Problema de Auto Frame Rate (AFR)
 
@@ -245,3 +245,161 @@ Tres ajustes para que el foco de Compose no se pierda cuando el vídeo empieza a
   tasa variable), hay que llamar primero a `restoreDefault()`; volver a invocar `attach()` no sirve.
 - **`versionName` debe seguir siendo SemVer puro** (`1.1.7`, sin sufijos): `UpdateRepositoryImpl` parte por
   `.` y `-` y descarta segmentos no numéricos.
+
+---
+
+## 4. v1.1.8 — PTS real frente al 24.0 mentiroso, viewport del panel de pistas y D-pad en sincronización
+
+v1.1.7 dejó el AFR con un solo disparo y el foco determinista, pero en la Homatics seguía entrando en
+**24.000 Hz (Modo 150)** con películas a 23.976 fps, el panel de pistas no enfocaba nada en películas con
+muchos audios (*Dune: Parte dos*) y el mando quedaba muerto mientras la barra de sincronización manual de
+subtítulos estaba abierta. Los tres fallos comparten causa: una fuente de verdad poco fiable (el entero 24
+del decodificador, el viewport por defecto de `LazyColumn`, el foco del contenedor) aceptada sin
+verificarla.
+
+### 4.1 `MediaFormat.KEY_FRAME_RATE` del decodificador Amlogic devuelve 24 para 23.976
+
+**Síntoma.** Con un mkv de 23.976 fps, `dumpsys display` mostraba el modo de 24.000002 Hz en lugar del
+23.976025 Hz. La diferencia es de 1 fotograma cada ~41 s: en una escena con paneo lento se percibe como un
+micro-salto aislado, imposible de distinguir del judder general sin medir.
+
+**Causa raíz.** `AfrVideoFrameListener.onVideoFrameAboutToBeRendered` consultaba, antes de muestrear PTS:
+
+```kotlin
+if (mediaFormat.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+    mediaFormat.getFloat(MediaFormat.KEY_FRAME_RATE)  // Amlogic: 24.0f para un máster 24000/1001
+}
+```
+
+`MediaFormat` es el objeto del **decodificador de hardware** (en Homatics/Xiaomi, Amlogic), no del
+contenedor. Su `KEY_FRAME_RATE` es un `frame-rate` declarativo que el chipset rellena con el entero más
+próximo, así que 23.976 se reporta como 24.0. Como esa rama se ejecutaba antes del muestreo y además
+marcaba `completed = true`, los PTS nunca llegaban a medirse: el AFR aplicaba 24.0 y desenganchaba el
+listener. El mismo sesgo afecta a `format.frameRate` en MP4 y en muchas cabeceras MKV.
+
+**Solución.** Dos capas:
+
+1. **Fuera la lectura de `KEY_FRAME_RATE`.** El listener ya no toca `mediaFormat` en absoluto. Los fps
+   salen exclusivamente de los `presentationTimeUs` de los fotogramas renderizados.
+2. **Banda ambigua.** Ni `format.frameRate` ni el `frameRate` del contenedor se aceptan si caen en
+   `23.70..24.10`; ahí la única fuente válida es el muestreo PTS. `attach()` aplica el valor del contenedor
+   solo si es concluyente (25, 50, 59.94, 60…) y, si no, registra el listener.
+
+```kotlin
+if (format.frameRate > 0f && !isAmbiguousRate(format.frameRate)) { ... }
+// KEY_FRAME_RATE: no se lee nunca. Ver §4.1.
+```
+
+### 4.2 Cálculo de fps robusto ante fotogramas perdidos
+
+**Causa raíz.** El cálculo anterior ordenaba los PTS y promediaba **todas** las diferencias en el rango
+5..100 ms, sin filtrar outliers:
+
+```kotlin
+val delta = sorted[i] - sorted[i - 1]
+if (delta in 5_000L..100_000L) { totalDurationUs += delta; validDeltas++ }
+```
+
+Un solo fotograma perdido durante el arranque (doble delta de ~83 ms, habitual tras el primer keyframe o
+un seek) entraba en la media y hundía el resultado: **21.80 fps** en lugar de 23.976 para un solo hueco en
+11 deltas, y 17.9 fps con dos. `normalizeFps` no reconocía esos valores, `findBestDisplayMode` no
+encontraba coincidencia y **el AFR no aplicaba nada** — el fallo intermitente que se veía como "a veces no
+cambia".
+
+**Solución.** `measureFpsFromPts()` calcula deltas **consecutivos** (sin ordenar: el decoder entrega en
+orden de presentación), descarta los que salen de 10..200 fps y los que se desvían más de un **25 % de la
+mediana**. Solo entonces promedia y aplica `1_000_000 / avgDeltaUs`. Si quedan menos de 9 deltas limpios,
+devuelve `null` y el listener sigue muestreando en vez de conmutar con basura.
+
+```kotlin
+val median = deltas.sorted()[deltas.size / 2]
+val clean = deltas.filter { abs(it - median) <= median * 0.25f }
+return (1_000_000.0 / (clean.sum().toDouble() / clean.size)).toFloat()
+```
+
+Medido con PTS sintéticos de un máster 24000/1001 (deltas 41708/41709 µs): **23.976 fps** con y sin
+fotograma perdido (antes: 21.80 fps con el hueco). Máster 24.000 (41667 µs): **23.9998 fps**.
+
+### 4.3 `normalizeFps` y desempate 23.976 vs 24.000
+
+- La banda de 23.976 se ensancha a `23.70..23.99` (antes empezaba en 23.75 y la frontera con 24.000 estaba
+  en 23.99, dejando 23.9760 justo en el borde). El muestreo de un máster 24000/1001 da 23.9755..23.9765 y
+  cae a la izquierda → **23.976025 Hz, Modo 149 en Homatics**. El de un máster 24.000 da 23.9998..24.0000 y
+  cae a la derecha → **24.000002 Hz, Modo 150**.
+- `findBestDisplayMode` ya no usa `firstOrNull` sobre la lista de modos del sistema (el orden de
+  `display.supportedModes` no está garantizado si ambos modos caen dentro de la tolerancia de 0.02 Hz).
+  Ahora elige el más cercano y, ante empate, prioriza 23.976: ~99 % del cine comercial está masterizado en
+  23.976p, así que en un panel que soporta ambos el modo correcto es el de 23.976025 Hz.
+
+### 4.4 Panel de pistas: el ítem activo debe existir en el primer frame
+
+**Síntoma.** *Dune: Parte dos* (10-15 pistas de audio entre idiomas y comentarios) abría el panel sin
+ningún ítem resaltado; el foco no aparecía hasta pulsar ABAJO una vez. Con 2-3 pistas funcionaba siempre.
+
+**Causa raíz.** Dos fallos encadenados:
+
+1. `OptionColumn` creaba la `LazyColumn` sin `state`, con el viewport en el índice 0. La pista activa (p.
+   ej. índice 8, el doblaje castellano de un remux) quedaba fuera de pantalla y `LazyColumn` **no compone
+   los ítems que no son visibles**. El `Modifier.focusRequester(initialFocus)` de ese ítem no existía, así
+   que el `requestFocus()` no tenía destino y fallaba en silencio.
+2. `LaunchedEffect(Unit)` corría una sola vez, en el primer pase de composición, cuando `audio` podía
+   estar aún vacío (`player.currentTracks` se puebla de forma asíncrona). Aunque el ítem llegara después, el
+   efecto ya había consumido su única ejecución.
+
+**Solución.**
+
+```kotlin
+// OptionColumn
+val listState = rememberLazyListState(
+    initialFirstVisibleItemIndex = if (focusIndex >= 0) (focusIndex - 1).coerceAtLeast(0) else 0,
+)
+LazyColumn(state = listState, ...)
+
+// TracksView
+LaunchedEffect(audioFocusIndex) {
+    delay(60)
+    runCatching { initialFocus.requestFocus() }
+}
+```
+
+El `-1` deja ver la opción anterior como contexto (el ítem activo no queda pegado al borde superior) y el
+`coerceAtLeast(0)` protege el caso `focusIndex == 0`. El `delay(60)` da a la `LazyColumn` tiempo para
+completar medición y layout con el scroll inicial ya colocado; `audioFocusIndex` como clave reinicia el
+efecto cuando la lista real de pistas llega y cambia cuál es la activa.
+
+### 4.5 D-pad muerto con la barra de sincronización de subtítulos abierta
+
+**Síntoma.** Con un subtítulo externo cargado, "Sincronizar subtítulos" abre una barra donde ◀▶ ajustan
+±100 ms, ▲▼ ±1 s y OK lanza el autoajuste. Ninguna tecla respondía.
+
+**Causa raíz.** El `Box` raíz de `PlayerScreen` llevaba `.focusable(enabled = !tracksOpen && !syncOpen)`.
+La barra de sincronización **no tiene componentes enfocables propios**: sus atajos viven en
+`handleKey`, que se ejecuta en el `.onKeyEvent` del propio Box. Al abrirla, el Box dejaba de ser enfocable,
+Compose soltaba el foco (`FocusedWindows: <none>` en `dumpsys input`) y los `KeyEvent` nunca llegaban. El
+`!tracksOpen` sí es necesario (el panel de pistas tiene su propio árbol de foco), pero `!syncOpen` no tiene
+justificación.
+
+**Solución.**
+
+```kotlin
+.focusable(enabled = !tracksOpen)
+```
+
+Regla general: desactivar el foco del contenedor solo cuando el overlay tenga destinos de foco propios.
+
+### 4.6 Resumen de ficheros tocados en v1.1.8
+
+| Fichero | Cambio |
+|---|---|
+| `core/media/.../AutoFrameRateManager.kt` | fuera `KEY_FRAME_RATE`; banda ambigua en `attach`/listener; `measureFpsFromPts` con filtro de mediana; `normalizeFps` 23.70..23.99; desempate 23.976 en `findBestDisplayMode` (§4.1-4.3) |
+| `feature/player/.../PlayerTracks.kt` | `rememberLazyListState(initialFirstVisibleItemIndex = focusIndex - 1)`; `LaunchedEffect(audioFocusIndex)` con `delay(60)` (§4.4) |
+| `feature/player/.../PlayerScreen.kt` | `.focusable(enabled = !tracksOpen)` — D-pad operativo con `syncOpen` (§4.5) |
+| `app/build.gradle.kts` | `versionCode = 118`, `versionName = "1.1.8"` |
+
+### 4.7 Invariantes que siguen vigentes
+
+- El AFR se aplica **una sola vez por stream**; `attach()` cortocircuita con `currentAppliedModeId != 0` y
+  `restoreDefault()` es lo único que libera el enclavamiento.
+- **Nunca** leer `MediaFormat.KEY_FRAME_RATE` ni fiarse de `format.frameRate` en la banda 23.7..24.1.
+- `versionName` sigue siendo SemVer puro (`1.1.8`, sin sufijos) para que `UpdateRepositoryImpl` lo compare.
+

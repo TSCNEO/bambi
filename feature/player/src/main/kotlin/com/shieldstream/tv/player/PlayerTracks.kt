@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -143,11 +144,15 @@ fun TracksPanel(
 private fun TracksView(audio: List<TrackOption>, text: List<TrackOption>) {
     // El foco entra en el audio seleccionado (o en el primero).
     val initialFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
+    val audioFocusIndex = audio.indexOfFirst { it.selected }.coerceAtLeast(0)
+    // `audioFocusIndex` como clave y no `Unit`: las pistas llegan de forma asíncrona (`currentTracks` puede
+    // estar vacío en el primer pase de composición) y, con clave `Unit`, el efecto corría una sola vez antes
+    // de que existiera el ítem a enfocar y el foco se perdía hasta pulsar ABAJO. El `delay(60)` deja que la
+    // `LazyColumn` termine medición y layout (con el scroll inicial ya colocado) antes de pedir el foco.
+    LaunchedEffect(audioFocusIndex) {
         delay(60)
         runCatching { initialFocus.requestFocus() }
     }
-    val audioFocusIndex = audio.indexOfFirst { it.selected }.coerceAtLeast(0)
 
     Row(
         Modifier
@@ -300,7 +305,16 @@ private fun OptionColumn(
         if (options.isEmpty()) {
             Text(emptyText, color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodyLarge)
         } else {
+            // Scroll inicial centrado en el ítem que va a recibir el foco. Sin esto, en películas con muchas
+            // pistas (Dune 2 trae 10-15 audios en varios idiomas) el índice enfocado queda fuera del viewport
+            // y `LazyColumn` no lo compone en el primer pase: el nodo de `initialFocus` no existe y el
+            // `requestFocus()` falla en silencio. El -1 deja ver la opción anterior como contexto y evita que
+            // el ítem activo quede pegado al borde superior.
+            val listState = rememberLazyListState(
+                initialFirstVisibleItemIndex = if (focusIndex >= 0) (focusIndex - 1).coerceAtLeast(0) else 0,
+            )
             LazyColumn(
+                state = listState,
                 verticalArrangement = Arrangement.spacedBy(4.dp),
                 contentPadding = PaddingValues(bottom = 48.dp),
                 modifier = Modifier.focusGroup(),

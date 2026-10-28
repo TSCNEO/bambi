@@ -365,7 +365,11 @@ fun PlayerScreen(
             }
             .focusRequester(focusRequester)
             .onKeyEvent(::handleKey)
-            .focusable(enabled = !tracksOpen && !syncOpen),
+            // Desactivar el foco solo con el panel de pistas abierto (ahí el D-pad navega por sus ítems).
+            // NO incluir `syncOpen`: la barra de sincronización manual de subtítulos no tiene componentes
+            // enfocables propios y delega sus atajos (◀▶ ±100 ms, ▲▼ ±1 s, OK autoajustar) en `handleKey`;
+            // con `!syncOpen` el Box perdía el foco de Android y el mando quedaba muerto.
+            .focusable(enabled = !tracksOpen),
     ) {
         player?.let { exoPlayer ->
             AndroidView(
