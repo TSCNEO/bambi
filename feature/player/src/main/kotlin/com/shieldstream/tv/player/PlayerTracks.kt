@@ -38,6 +38,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
@@ -142,7 +143,7 @@ private fun TracksView(audio: List<TrackOption>, text: List<TrackOption>) {
     // El foco entra en el audio seleccionado (o en el primero).
     val initialFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) {
-        withFrameNanos { }
+        delay(60)
         runCatching { initialFocus.requestFocus() }
     }
     val audioFocusIndex = audio.indexOfFirst { it.selected }.coerceAtLeast(0)

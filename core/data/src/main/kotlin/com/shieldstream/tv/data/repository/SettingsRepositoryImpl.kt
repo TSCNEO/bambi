@@ -104,6 +104,14 @@ class SettingsRepositoryImpl @Inject constructor(
         useExternalPlayerFlow.value = enabled
     }
 
+    private val autoFrameRateFlow = MutableStateFlow(prefs.getBoolean(KEY_AUTO_FRAME_RATE, true))
+    override val autoFrameRate: Flow<Boolean> = autoFrameRateFlow
+
+    override suspend fun setAutoFrameRate(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_AUTO_FRAME_RATE, enabled).apply()
+        autoFrameRateFlow.value = enabled
+    }
+
     override val language: AppLanguage get() = Lang.current
 
     /** commit() (no apply): la app se reinicia justo después y el valor tiene que estar ya en disco. */
@@ -149,6 +157,7 @@ class SettingsRepositoryImpl @Inject constructor(
         const val KEY_PROVIDERS_OFF = "source_providers_off"
         const val KEY_FORCE_SOFTWARE_AUDIO = "force_software_audio"
         const val KEY_USE_EXTERNAL_PLAYER = "use_external_player"
+        const val KEY_AUTO_FRAME_RATE = "auto_frame_rate"
         const val DEFAULT_BUFFER = 80
         const val MIN_BUFFER = 50
         const val MAX_BUFFER = 100

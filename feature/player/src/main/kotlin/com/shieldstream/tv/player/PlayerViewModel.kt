@@ -31,6 +31,7 @@ import com.shieldstream.tv.domain.WatchProgressRepository
 import com.shieldstream.tv.domain.ScrobbleAction
 import com.shieldstream.tv.domain.TraktRepository
 import com.shieldstream.tv.media.Media3Factory
+import com.shieldstream.tv.media.AutoFrameRateManager
 import androidx.media3.common.PlaybackException
 import com.shieldstream.tv.model.ExternalSubtitle
 import com.shieldstream.tv.model.SubtitleQuery
@@ -98,6 +99,7 @@ class PlayerViewModel @Inject constructor(
     private val subtitles: SubtitleRepository,
     private val trakt: TraktRepository,
     private val skipSegmentsRepository: SkipSegmentsRepository,
+    val autoFrameRateManager: AutoFrameRateManager,
 ) : ViewModel() {
 
     private val _player = MutableStateFlow<ExoPlayer?>(null)
@@ -126,6 +128,10 @@ class PlayerViewModel @Inject constructor(
     /** Ajuste "Forzar audio por software (PCM)": FFmpeg decodifica (E-AC-3, DTS, TrueHD…) en la CPU. */
     val forceSoftwareAudio: StateFlow<Boolean> = settings.forceSoftwareAudio
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** Ajuste "Ajuste automático de frecuencia (AFR)": sincroniza los Hz de la pantalla con los fps del vídeo. */
+    val autoFrameRate: StateFlow<Boolean> = settings.autoFrameRate
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
     /** Ajuste "Reproductor externo por defecto": el enlace se abre en Just Player / VLC. */
     private val useExternalPlayer: StateFlow<Boolean> = settings.useExternalPlayer

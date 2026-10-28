@@ -114,6 +114,7 @@ fun SettingsScreen(
                     onSeekMode = viewModel::setSeekThumbnails,
                     onSoftwareAudio = viewModel::setForceSoftwareAudio,
                     onExternalPlayer = viewModel::setUseExternalPlayer,
+                    onAutoFrameRate = viewModel::setAutoFrameRate,
                     onDebrid = viewModel::setDebrid,
                     onOpenSetup = onOpenSetup,
                     onLanguage = { language -> viewModel.setLanguage(language) { restartApp(context) } },
@@ -146,6 +147,7 @@ private fun SettingsList(
     onSeekMode: (Boolean) -> Unit,
     onSoftwareAudio: (Boolean) -> Unit,
     onExternalPlayer: (Boolean) -> Unit,
+    onAutoFrameRate: (Boolean) -> Unit,
     onDebrid: (DebridService) -> Unit,
     onOpenSetup: () -> Unit,
     onLanguage: (AppLanguage) -> Unit,
@@ -248,6 +250,7 @@ private fun SettingsList(
             item { LanguageCard(current = state.language, onApply = onLanguage) }
             item { SectionTitle(tr("Reproducción", "Playback")) }
             item { SeekModeCard(thumbnails = state.seekThumbnails, onChange = onSeekMode) }
+            item { AutoFrameRateCard(enabled = state.autoFrameRate, onChange = onAutoFrameRate) }
             item { SoftwareAudioCard(enabled = state.forceSoftwareAudio, onChange = onSoftwareAudio) }
             item { ExternalPlayerCard(enabled = state.useExternalPlayer, onChange = onExternalPlayer) }
             item { AutoNextCard() }
@@ -561,6 +564,48 @@ private fun AutoNextCard(viewModel: SettingsViewModel = hiltViewModel()) {
                     tr(
                         "Series: en los créditos sale \"Siguiente episodio\" (OK lo pone ya) y, al terminar el episodio, empieza el siguiente.",
                         "Shows: during the credits \"Next episode\" appears (OK plays it now) and, when the episode ends, the next one starts.",
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
+                )
+            }
+            Spacer(Modifier.width(24.dp))
+            Row(
+                Modifier
+                    .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(50))
+                    .padding(4.dp),
+            ) {
+                SegmentOption(tr("Sí", "On"), selected = enabled)
+                SegmentOption(tr("No", "Off"), selected = !enabled)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AutoFrameRateCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
+    FocusCard(
+        onClick = { onChange(!enabled) },
+        modifier = Modifier.onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when (event.key) {
+                Key.DirectionLeft -> { onChange(true); true }
+                Key.DirectionRight -> { onChange(false); true }
+                else -> false
+            }
+        },
+    ) { _ ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Ajuste automático de frecuencia (AFR)", "Auto frame rate matching (AFR)"),
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                )
+                Text(
+                    tr(
+                        "Cambia la tasa de refresco del televisor (24p, 50p, 60p) según los fotogramas del vídeo para eliminar tirones (judder).",
+                        "Switches TV refresh rate (24p, 50p, 60p) to match video frame rate and eliminate judder.",
                     ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = Muted,

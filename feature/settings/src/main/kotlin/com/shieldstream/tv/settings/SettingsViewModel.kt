@@ -54,6 +54,7 @@ sealed interface SettingsUiState {
         val seekThumbnails: Boolean,
         val forceSoftwareAudio: Boolean,
         val useExternalPlayer: Boolean,
+        val autoFrameRate: Boolean,
         /** Servicio debrid en uso. */
         val debrid: DebridService,
         val editor: KeyEditor?,
@@ -83,13 +84,18 @@ class SettingsViewModel @Inject constructor(
     private val editor = MutableStateFlow<KeyEditor?>(null)
 
     private val playback = combine(
-        settings.maxBufferSeconds,
-        settings.seekThumbnails,
-        settings.debridService,
+        combine(
+            settings.maxBufferSeconds,
+            settings.seekThumbnails,
+            settings.debridService,
+        ) { buffer, thumbnails, debrid ->
+            Triple(buffer, thumbnails, debrid)
+        },
         settings.forceSoftwareAudio,
         settings.useExternalPlayer,
-    ) { buffer, thumbnails, debrid, forceSoftware, useExternal ->
-        SettingsPlayback(buffer, thumbnails, debrid, forceSoftware, useExternal)
+        settings.autoFrameRate,
+    ) { (buffer, thumbnails, debrid), forceSoftware, useExternal, afr ->
+        SettingsPlayback(buffer, thumbnails, debrid, forceSoftware, useExternal, afr)
     }
 
 data class SettingsPlayback(
@@ -98,6 +104,7 @@ data class SettingsPlayback(
     val debrid: DebridService,
     val forceSoftwareAudio: Boolean,
     val useExternalPlayer: Boolean,
+    val autoFrameRate: Boolean,
 )
 
     val uiState: StateFlow<SettingsUiState> = combine(
@@ -119,6 +126,7 @@ data class SettingsPlayback(
             seekThumbnails = play.seekThumbnails,
             forceSoftwareAudio = play.forceSoftwareAudio,
             useExternalPlayer = play.useExternalPlayer,
+            autoFrameRate = play.autoFrameRate,
             debrid = play.debrid,
             editor = edit,
         )
@@ -218,6 +226,10 @@ data class SettingsPlayback(
 
     fun setUseExternalPlayer(enabled: Boolean) {
         viewModelScope.launch { settings.setUseExternalPlayer(enabled) }
+    }
+
+    fun setAutoFrameRate(enabled: Boolean) {
+        viewModelScope.launch { settings.setAutoFrameRate(enabled) }
     }
 
     /** Series: siguiente episodio automático. */

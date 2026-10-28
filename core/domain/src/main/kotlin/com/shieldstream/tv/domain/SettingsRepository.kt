@@ -64,4 +64,11 @@ interface SettingsRepository {
     /** Reproducción: abrir el enlace resuelto en un reproductor externo (Just Player, VLC…) en vez del interno. */
     val useExternalPlayer: Flow<Boolean>
     suspend fun setUseExternalPlayer(enabled: Boolean)
+
+    /**
+     * Ajuste automático de frecuencia (AFR): adapta la tasa de refresco del televisor (24p, 50p, 60p) a los fotogramas
+     * del vídeo en reproducción para eliminar el judder (tirones de 3:2 pulldown).
+     */
+    val autoFrameRate: Flow<Boolean>
+    suspend fun setAutoFrameRate(enabled: Boolean)
 }

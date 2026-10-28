@@ -10,6 +10,9 @@ import androidx.compose.foundation.border
 import androidx.compose.ui.text.style.TextOverflow
 import com.shieldstream.tv.model.tr
 import android.view.View
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -48,6 +51,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
@@ -97,6 +101,7 @@ fun PlayerScreen(
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
     val thumbnailsEnabled by viewModel.seekThumbnails.collectAsStateWithLifecycle()
     val forceSoftwareAudio by viewModel.forceSoftwareAudio.collectAsStateWithLifecycle()
+    val autoFrameRate by viewModel.autoFrameRate.collectAsStateWithLifecycle()
     val nextUp by viewModel.nextUp.collectAsStateWithLifecycle()
     val skipPrompt by viewModel.skipPrompt.collectAsStateWithLifecycle()
     // "Siguiente episodio": se sale a la ficha, que busca las fuentes del siguiente y lo pone.
@@ -139,6 +144,43 @@ fun PlayerScreen(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
+
+    // Auto Frame Rate (AFR): adapta la tasa HDMI del televisor a los fps del vídeo para eliminar judder.
+    DisposableEffect(player, autoFrameRate, activity) {
+        val p = player ?: return@DisposableEffect onDispose { }
+        val act = activity ?: return@DisposableEffect onDispose { }
+
+        fun checkAndApplyAfr() {
+            if (!autoFrameRate) return
+            viewModel.autoFrameRateManager.applyForPlayer(act, p)
+        }
+
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) {
+                    checkAndApplyAfr()
+                }
+            }
+
+            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                checkAndApplyAfr()
+            }
+
+            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                checkAndApplyAfr()
+            }
+        }
+        p.addListener(listener)
+        checkAndApplyAfr()
+
+        onDispose {
+            p.removeListener(listener)
+            viewModel.autoFrameRateManager.restoreDefault(act)
+        }
     }
 
     val playback = rememberPlaybackState(player)
@@ -188,8 +230,13 @@ fun PlayerScreen(
 
     // El foco del D-pad vive en Compose (no en el PlayerView): aquí se traducen las teclas del mando.
     val focusRequester = remember { FocusRequester() }
-    // Al cerrar el panel de pistas el foco vuelve al reproductor (si no, el D-pad no haría nada).
-    LaunchedEffect(tracksOpen) { if (!tracksOpen) runCatching { focusRequester.requestFocus() } }
+    // Al entrar en reproducción (o al cerrar el panel de pistas), el foco vuelve a Compose para el D-pad.
+    LaunchedEffect(state, tracksOpen) {
+        if (!tracksOpen && state is PlayerUiState.Playing) {
+            delay(50)
+            runCatching { focusRequester.requestFocus() }
+        }
+    }
 
     // "Omitir intro/resumen": 10 s a la vista (como en Nuvio) y luego solo con los controles abiertos. Mientras no se
     // ve, OK vuelve a ser pausa.
@@ -291,14 +338,10 @@ fun PlayerScreen(
                 }
                 true
             }
-            // ▼ con los controles visibles (o Menú / tecla de subtítulos) abre Audio y subtítulos.
+            // ▼ abre directamente el panel de Audio, Subtítulos y Reproductor externo.
             Key.DirectionDown, Key.Menu, Key.Captions -> {
-                if (controlsVisible || event.key != Key.DirectionDown) {
-                    controlsVisible = false
-                    tracksOpen = true
-                } else {
-                    showControls()
-                }
+                controlsVisible = false
+                tracksOpen = true
                 true
             }
             Key.DirectionUp, Key.Info -> { showControls(); true }
@@ -333,6 +376,8 @@ fun PlayerScreen(
                         useController = false // controles propios en Compose (abajo)
                         keepScreenOn = true // evita que salte el salvapantallas de Android TV
                         isFocusable = false
+                        isFocusableInTouchMode = false
+                        descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
                     }
                 },
                 update = { view ->
@@ -640,4 +685,14 @@ private fun StatusOverlay(title: String, message: String, loading: Boolean) {
         }
     }
 }
+
+private fun Context.findActivity(): Activity? {
+    var ctx = this
+    while (ctx is ContextWrapper) {
+        if (ctx is Activity) return ctx
+        ctx = ctx.baseContext
+    }
+    return null
+}
+
 
