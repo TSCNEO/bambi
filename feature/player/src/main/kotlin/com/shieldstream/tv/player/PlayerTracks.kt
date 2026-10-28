@@ -328,11 +328,11 @@ private fun OptionRow(option: TrackOption, onClick: () -> Unit, modifier: Modifi
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .onFocusChanged { focused = it.isFocused }
             .clip(RoundedCornerShape(6.dp))
             .background(if (focused) Color.White else Color.Transparent)
-            .tvClickable(onClick = onClick)
             .then(modifier)
-            .onFocusChanged { focused = it.isFocused }
+            .tvClickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

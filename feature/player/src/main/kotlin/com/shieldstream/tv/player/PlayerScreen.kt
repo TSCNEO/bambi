@@ -159,19 +159,15 @@ fun PlayerScreen(
             viewModel.autoFrameRateManager.attach(act, p)
         }
 
+        // Solo STATE_READY: los eventos de pistas y de tamaño de vídeo se eliminaron a propósito en v1.1.7.
+        // Re-aplicar AFR desde ellos producía micro-conmutaciones de HDMI a mitad de reproducción (el panel de
+        // pistas, el cambio de subtítulo o la rotación de pista reemiten onTracksChanged). El modo queda
+        // enclavado una sola vez por stream (ver AutoFrameRateManager.attach).
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_READY) {
                     checkAndApplyAfr()
                 }
-            }
-
-            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
-                checkAndApplyAfr()
-            }
-
-            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
-                checkAndApplyAfr()
             }
         }
         p.addListener(listener)
@@ -231,8 +227,10 @@ fun PlayerScreen(
 
     // El foco del D-pad vive en Compose (no en el PlayerView): aquí se traducen las teclas del mando.
     val focusRequester = remember { FocusRequester() }
-    // Al entrar en reproducción (o al cerrar el panel de pistas), el foco vuelve a Compose para el D-pad.
-    LaunchedEffect(state, tracksOpen) {
+    // Al entrar en reproducción, al cerrar el panel de pistas o al empezar a correr fotogramas, el foco vuelve a
+    // Compose para el D-pad. `playback.playing` es clave: si la fuente se resolvió asíncronamente y el vídeo
+    // arranca más tarde, el SurfaceView puede haberse quedado con el foco y hay que reclamarlo de nuevo.
+    LaunchedEffect(state, tracksOpen, playback.isPlaying) {
         if (!tracksOpen && state is PlayerUiState.Playing) {
             delay(50)
             runCatching { focusRequester.requestFocus() }
@@ -376,6 +374,7 @@ fun PlayerScreen(
                         // SurfaceView por defecto: obligatorio para Dolby Vision (TextureView no lo soporta).
                         useController = false // controles propios en Compose (abajo)
                         keepScreenOn = true // evita que salte el salvapantallas de Android TV
+                        // El foco del D-pad vive en Compose: ni el PlayerView ni su SurfaceView interno deben robarlo.
                         isFocusable = false
                         isFocusableInTouchMode = false
                         descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
@@ -383,6 +382,9 @@ fun PlayerScreen(
                 },
                 update = { view ->
                     view.player = exoPlayer
+                    // Refuerzo por si el PlayerView recreó su SurfaceView al recomponer (cambio de modo HDMI o
+                    // de tamaño): cualquier vista interna del reproductor queda fuera del reparto de foco.
+                    disableDescendantFocus(view)
                     // Con subtítulo externo, la pista del archivo seleccionada es solo la referencia: no se muestra.
                     view.subtitleView?.visibility = if (activeExternal != null) View.GONE else View.VISIBLE
                 },
@@ -696,4 +698,19 @@ private fun Context.findActivity(): Activity? {
     return null
 }
 
-
+/**
+ * Recorre el árbol de vistas del reproductor y deja sin foco a todas las vistas hijas (SurfaceView incluida).
+ * En Android TV el `SurfaceView` de `PlayerView` puede arrebatar el foco a la jerarquía de Compose y dejar el
+ * D-pad sin destino (`dumpsys input` muestra `FocusedWindows: <none>`), sobre todo tras una conmutación de modo
+ * HDMI que fuerza la recreación de la superficie.
+ */
+private fun disableDescendantFocus(view: View) {
+    view.isFocusable = false
+    view.isFocusableInTouchMode = false
+    if (view is android.view.ViewGroup) {
+        view.descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        for (i in 0 until view.childCount) {
+            disableDescendantFocus(view.getChildAt(i))
+        }
+    }
+}

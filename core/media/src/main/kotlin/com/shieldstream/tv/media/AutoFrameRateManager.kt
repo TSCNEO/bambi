@@ -48,8 +48,16 @@ class AutoFrameRateManager @Inject constructor(
     /**
      * Vincula el gestor de AFR al [player] y a la ventana de [activity].
      * Aplica la tasa inmediatamente si el contenedor la expone, o escucha los primeros fotogramas decodificados.
+     *
+     * Guarda *single-shot*: si ya hay un modo aplicado ([currentAppliedModeId] != 0) para este stream,
+     * no se recalcula ni se vuelve a conmutar. Evita micro-conmutaciones (y parpadeos HDMI) por eventos
+     * repetidos de pistas, cambios de tamaño de vídeo o reapertura del panel de pistas.
      */
     fun attach(activity: Activity, player: Player) {
+        if (currentAppliedModeId != 0) {
+            Log.i(TAG, "AFR: modo ya enclavado (modeId=$currentAppliedModeId), se ignora nuevo attach()")
+            return
+        }
         detach(activity)
         activePlayer = player
 
@@ -126,16 +134,19 @@ class AutoFrameRateManager @Inject constructor(
 
     /**
      * Restaura el modo de refresco por defecto (0 en WindowManager.LayoutParams para usar la configuración del sistema).
+     * Desengancha también cualquier listener de AFR pendiente y libera el enclavamiento, de modo que la siguiente
+     * reproducción pueda volver a conmutar.
      */
     fun restoreDefault(activity: Activity) {
+        detach(activity)
+        currentAppliedModeId = 0
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
         val window = activity.window ?: return
         val lp = window.attributes
-        if (lp.preferredDisplayModeId != 0 || currentAppliedModeId != 0) {
+        if (lp.preferredDisplayModeId != 0) {
             Log.i(TAG, "AFR: restaurando modo HDMI por defecto (preferredDisplayModeId = 0)")
             lp.preferredDisplayModeId = 0
             window.attributes = lp
-            currentAppliedModeId = 0
         }
     }
 
@@ -273,12 +284,14 @@ class AutoFrameRateManager @Inject constructor(
         }
 
         private fun dispatchApply(act: Activity, fps: Float) {
+            // Limpieza inmediata del listener *antes* de conmutar el modo: el callback llega desde el hilo de
+            // render y si se dejara registrado seguiría muestreando fotogramas y podría re-aplicar el modo.
+            runCatching { exoPlayer.clearVideoFrameMetadataListener(this) }
+            if (activeListener === this) {
+                activeListener = null
+            }
             mainHandler.post {
                 applyFrameRate(act, fps)
-                exoPlayer.clearVideoFrameMetadataListener(this)
-                if (activeListener === this) {
-                    activeListener = null
-                }
             }
         }
     }
