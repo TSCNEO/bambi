@@ -55,8 +55,8 @@ android {
         minSdk = 21
         targetSdk = 35
         // Al publicar una versión nueva: subir versionCode (+1) y versionName (1.0.1, 1.1.0…).
-        versionCode = 115
-        versionName = "1.1.5"
+        versionCode = 116
+        versionName = "1.1.6"
         manifestPlaceholders["appLabel"] = "@string/app_name"
 
         buildConfigField("String", "UPSTREAM_VERSION", "\"${getUpstreamVersion()}\"")

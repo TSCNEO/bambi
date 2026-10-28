@@ -156,7 +156,7 @@ fun PlayerScreen(
 
         fun checkAndApplyAfr() {
             if (!autoFrameRate) return
-            viewModel.autoFrameRateManager.applyForPlayer(act, p)
+            viewModel.autoFrameRateManager.attach(act, p)
         }
 
         val listener = object : Player.Listener {
@@ -179,6 +179,7 @@ fun PlayerScreen(
 
         onDispose {
             p.removeListener(listener)
+            viewModel.autoFrameRateManager.detach(act)
             viewModel.autoFrameRateManager.restoreDefault(act)
         }
     }
@@ -366,7 +367,7 @@ fun PlayerScreen(
             }
             .focusRequester(focusRequester)
             .onKeyEvent(::handleKey)
-            .focusable(),
+            .focusable(enabled = !tracksOpen && !syncOpen),
     ) {
         player?.let { exoPlayer ->
             AndroidView(

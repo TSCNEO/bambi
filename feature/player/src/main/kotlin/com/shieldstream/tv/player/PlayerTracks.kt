@@ -4,6 +4,7 @@ import com.shieldstream.tv.model.Lang
 import com.shieldstream.tv.model.tr
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -151,7 +152,8 @@ private fun TracksView(audio: List<TrackOption>, text: List<TrackOption>) {
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 96.dp, vertical = 48.dp),
+            .padding(horizontal = 96.dp, vertical = 48.dp)
+            .focusGroup(),
         horizontalArrangement = Arrangement.spacedBy(64.dp),
     ) {
         OptionColumn(
@@ -301,6 +303,7 @@ private fun OptionColumn(
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(4.dp),
                 contentPadding = PaddingValues(bottom = 48.dp),
+                modifier = Modifier.focusGroup(),
             ) {
                 itemsIndexed(options, key = { _, o -> o.key }) { index, option ->
                     OptionRow(
@@ -323,12 +326,13 @@ private fun OptionRow(option: TrackOption, onClick: () -> Unit, modifier: Modifi
     var focused by remember { mutableStateOf(false) }
     val fg = if (focused) Color.Black else Color.White
     Row(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxWidth()
-            .onFocusChanged { focused = it.isFocused }
             .clip(RoundedCornerShape(6.dp))
             .background(if (focused) Color.White else Color.Transparent)
             .tvClickable(onClick = onClick)
+            .then(modifier)
+            .onFocusChanged { focused = it.isFocused }
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

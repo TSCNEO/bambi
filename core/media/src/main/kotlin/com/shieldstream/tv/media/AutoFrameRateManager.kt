@@ -2,7 +2,10 @@ package com.shieldstream.tv.media
 
 import android.app.Activity
 import android.content.Context
+import android.media.MediaFormat
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.Display
 import androidx.annotation.RequiresApi
@@ -11,7 +14,9 @@ import androidx.media3.common.Format
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.video.VideoFrameMetadataListener
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.Collections
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.abs
@@ -25,24 +30,62 @@ import kotlin.math.roundToInt
  * (Quick Media Switching), el sistema operativo ignora la petición y mantiene la salida a 60 Hz fijada en el
  * launcher, provocando judder (tirones de 3:2 pulldown) en películas a 23.976 / 24 fps.
  *
- * Esta clase detecta la tasa real del vídeo (a través de [Player.getVideoFormat] o de las pistas activas)
+ * Esta clase detecta la tasa real del vídeo (a través de los metadatos de contenedor/pistas, o mediante
+ * medición directa de timestamps PTS vía [VideoFrameMetadataListener] para archivos MKV/remuxes sin encabezado)
  * y activa el modo de pantalla nativo correspondiente mediante `preferredDisplayModeId` en la [Activity],
  * restaurando el modo original al finalizar la reproducción.
  */
 @Singleton
+@UnstableApi
 class AutoFrameRateManager @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
     private var currentAppliedModeId: Int = 0
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var activeListener: AfrVideoFrameListener? = null
+    private var activePlayer: Player? = null
 
     /**
-     * Aplica la tasa de refresco óptima en la ventana de [activity] para el vídeo en reproducción en [player].
+     * Vincula el gestor de AFR al [player] y a la ventana de [activity].
+     * Aplica la tasa inmediatamente si el contenedor la expone, o escucha los primeros fotogramas decodificados.
+     */
+    fun attach(activity: Activity, player: Player) {
+        detach(activity)
+        activePlayer = player
+
+        // 1. Detección directa por metadatos del contenedor / pistas
+        val directFps = extractFrameRate(player)
+        if (directFps > 0f) {
+            Log.i(TAG, "AFR: detectado frame rate directo en contenedor/pistas: $directFps fps")
+            applyFrameRate(activity, directFps)
+            return
+        }
+
+        // 2. Detección en tiempo real vía VideoFrameMetadataListener en ExoPlayer (ideal para MKVs sin encabezado de fps)
+        if (player is ExoPlayer) {
+            Log.i(TAG, "AFR: registrando VideoFrameMetadataListener en ExoPlayer para muestreo PTS en vivo")
+            val listener = AfrVideoFrameListener(activity, player)
+            activeListener = listener
+            player.setVideoFrameMetadataListener(listener)
+        }
+    }
+
+    /**
+     * Desvincula cualquier listener activo de AFR.
+     */
+    fun detach(activity: Activity) {
+        activeListener?.let { l ->
+            (activePlayer as? ExoPlayer)?.clearVideoFrameMetadataListener(l)
+        }
+        activeListener = null
+        activePlayer = null
+    }
+
+    /**
+     * Compatibilidad: vincula y aplica AFR para el [player].
      */
     fun applyForPlayer(activity: Activity, player: Player) {
-        val fps = extractFrameRate(player)
-        if (fps > 0f) {
-            applyFrameRate(activity, fps)
-        }
+        attach(activity, player)
     }
 
     /**
@@ -100,7 +143,6 @@ class AutoFrameRateManager @Inject constructor(
      * Extrae los fotogramas por segundo del [player], comprobando tanto [Player.getVideoFormat] como
      * los formatos de las pistas de vídeo en `currentTracks`.
      */
-    @OptIn(UnstableApi::class)
     fun extractFrameRate(player: Player): Float {
         if (player is ExoPlayer) {
             val direct = player.videoFormat?.frameRate
@@ -166,6 +208,79 @@ class AutoFrameRateManager @Inject constructor(
         fps in 59.85f..59.97f -> 59.94006f
         fps in 59.97f..60.1f -> 60.0f
         else -> fps
+    }
+
+    private inner class AfrVideoFrameListener(
+        private val activity: Activity,
+        private val exoPlayer: ExoPlayer,
+    ) : VideoFrameMetadataListener {
+        private val ptsList = Collections.synchronizedList(mutableListOf<Long>())
+        @Volatile private var completed = false
+
+        override fun onVideoFrameAboutToBeRendered(
+            presentationTimeUs: Long,
+            releaseTimeNs: Long,
+            format: Format,
+            mediaFormat: MediaFormat?,
+        ) {
+            if (completed) return
+
+            // Si format reporta frameRate válido
+            if (format.frameRate > 0f) {
+                completed = true
+                dispatchApply(activity, format.frameRate)
+                return
+            }
+
+            // Si mediaFormat del decodificador hardware reporta KEY_FRAME_RATE
+            if (mediaFormat != null) {
+                val mfRate = runCatching {
+                    if (mediaFormat.containsKey(MediaFormat.KEY_FRAME_RATE)) {
+                        mediaFormat.getFloat(MediaFormat.KEY_FRAME_RATE)
+                    } else null
+                }.getOrNull()
+                if (mfRate != null && mfRate > 0f) {
+                    completed = true
+                    dispatchApply(activity, mfRate)
+                    return
+                }
+            }
+
+            if (presentationTimeUs < 0) return
+            ptsList.add(presentationTimeUs)
+
+            if (ptsList.size >= 12) {
+                completed = true
+                val sorted = ptsList.toList().sorted()
+                var totalDurationUs = 0L
+                var validDeltas = 0
+                for (i in 1 until sorted.size) {
+                    val delta = sorted[i] - sorted[i - 1]
+                    if (delta in 5_000L..100_000L) { // rango 10 fps a 200 fps
+                        totalDurationUs += delta
+                        validDeltas++
+                    }
+                }
+                if (validDeltas >= 6) {
+                    val avgDurationUs = totalDurationUs.toFloat() / validDeltas
+                    val calculatedFps = 1_000_000f / avgDurationUs
+                    Log.i(TAG, "AFR: calculado por PTS en vivo: $calculatedFps fps (media: $avgDurationUs us)")
+                    dispatchApply(activity, calculatedFps)
+                } else {
+                    completed = false // Pocos deltas válidos, tomar más muestras
+                }
+            }
+        }
+
+        private fun dispatchApply(act: Activity, fps: Float) {
+            mainHandler.post {
+                applyFrameRate(act, fps)
+                exoPlayer.clearVideoFrameMetadataListener(this)
+                if (activeListener === this) {
+                    activeListener = null
+                }
+            }
+        }
     }
 
     companion object {
