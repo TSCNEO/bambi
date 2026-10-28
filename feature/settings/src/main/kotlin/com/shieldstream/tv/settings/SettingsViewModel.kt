@@ -52,6 +52,8 @@ sealed interface SettingsUiState {
         val bufferSeconds: Int,
         /** ◀▶ en el reproductor: miniaturas (true) o saltos de 10 s (false). */
         val seekThumbnails: Boolean,
+        val forceSoftwareAudio: Boolean,
+        val useExternalPlayer: Boolean,
         /** Servicio debrid en uso. */
         val debrid: DebridService,
         val editor: KeyEditor?,
@@ -84,14 +86,26 @@ class SettingsViewModel @Inject constructor(
         settings.maxBufferSeconds,
         settings.seekThumbnails,
         settings.debridService,
-    ) { buffer, thumbnails, debrid -> Triple(buffer, thumbnails, debrid) }
+        settings.forceSoftwareAudio,
+        settings.useExternalPlayer,
+    ) { buffer, thumbnails, debrid, forceSoftware, useExternal ->
+        SettingsPlayback(buffer, thumbnails, debrid, forceSoftware, useExternal)
+    }
+
+data class SettingsPlayback(
+    val bufferSeconds: Int,
+    val seekThumbnails: Boolean,
+    val debrid: DebridService,
+    val forceSoftwareAudio: Boolean,
+    val useExternalPlayer: Boolean,
+)
 
     val uiState: StateFlow<SettingsUiState> = combine(
         apiKeys.keys,
         statuses,
         playback,
         editor,
-    ) { keys, status, (buffer, thumbnails, debrid), edit ->
+    ) { keys, status, play, edit ->
         SettingsUiState.Ready(
             services = ApiService.entries.map { service ->
                 val key = keys[service]
@@ -101,9 +115,11 @@ class SettingsViewModel @Inject constructor(
                     status = if (key.isNullOrBlank()) ServiceStatus.Missing else status[service] ?: ServiceStatus.Checking,
                 )
             },
-            bufferSeconds = buffer,
-            seekThumbnails = thumbnails,
-            debrid = debrid,
+            bufferSeconds = play.bufferSeconds,
+            seekThumbnails = play.seekThumbnails,
+            forceSoftwareAudio = play.forceSoftwareAudio,
+            useExternalPlayer = play.useExternalPlayer,
+            debrid = play.debrid,
             editor = edit,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState.Loading)
@@ -194,6 +210,14 @@ class SettingsViewModel @Inject constructor(
 
     fun setSpanishFirst(enabled: Boolean) {
         viewModelScope.launch { settings.setSpanishFirst(enabled) }
+    }
+
+    fun setForceSoftwareAudio(enabled: Boolean) {
+        viewModelScope.launch { settings.setForceSoftwareAudio(enabled) }
+    }
+
+    fun setUseExternalPlayer(enabled: Boolean) {
+        viewModelScope.launch { settings.setUseExternalPlayer(enabled) }
     }
 
     /** Series: siguiente episodio automático. */

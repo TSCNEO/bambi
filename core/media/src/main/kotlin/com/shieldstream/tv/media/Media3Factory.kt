@@ -45,7 +45,7 @@ import android.media.MediaCodecInfo.CodecProfileLevel as AndroidProfileLevel
 class Media3Factory @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
-    fun createPlayer(maxBufferSeconds: Int): ExoPlayer {
+    fun createPlayer(maxBufferSeconds: Int, forceSoftwareAudio: Boolean = false): ExoPlayer {
         val codecSelector = MediaCodecSelector { mimeType, secure, tunneling ->
             val infos = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling)
             if (mimeType == MimeTypes.VIDEO_DOLBY_VISION) {
@@ -56,12 +56,22 @@ class Media3Factory @Inject constructor(
             }
         }
 
-        val renderersFactory = ShieldRenderersFactory(context)
+        val renderersFactory = ShieldRenderersFactory(context, preferSoftwareAudio = forceSoftwareAudio)
             .setEnableDecoderFallback(true)
-            // Decodificadores de extensión (FFmpeg, libgav1, dav1d…): van DETRÁS de los de hardware, así que
-            // solo entran cuando ningún decoder del dispositivo admite la pista. Imprescindible para DTS /
-            // DTS-HD / TrueHD en TVs sin licencia (p. ej. Chromecast con Google TV 4K).
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+            // Decodificadores de extensión (FFmpeg, libgav1, dav1d…):
+            //  - ON: van DETRÁS de los de hardware, así que solo entran cuando ningún decoder del dispositivo
+            //    admite la pista. Imprescindible para DTS / DTS-HD / TrueHD en TVs sin licencia.
+            //  - PREFER ("Forzar audio por software"): FFmpeg queda el PRIMERO de los renderers de audio, así que
+            //    E-AC-3 / AC-3 / DTS / TrueHD se decodifican en la CPU a PCM y suenan en cualquier TV o barra
+            //    (adiós al silencio cuando el sistema manda bitstream que la tele no decodifica). El vídeo no
+            //    cambia: ShieldRenderersFactory monta sus propios renderers de vídeo.
+            .setExtensionRendererMode(
+                if (forceSoftwareAudio) {
+                    DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+                } else {
+                    DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
+                },
+            )
             .setMediaCodecSelector(codecSelector)
 
         val trackSelector = DefaultTrackSelector(context).apply {
@@ -105,13 +115,18 @@ class Media3Factory @Inject constructor(
 
 /** Sustituye el renderer de vídeo por defecto por uno que entiende Dolby Vision perfil 7. */
 @OptIn(UnstableApi::class)
-private class ShieldRenderersFactory(context: Context) : DefaultRenderersFactory(context) {
+private class ShieldRenderersFactory(
+    context: Context,
+    /** "Forzar audio por software": el decoder FFmpeg va el primero (PCM en la CPU). */
+    private val preferSoftwareAudio: Boolean = false,
+) : DefaultRenderersFactory(context) {
     /**
      * Añade el decoder de audio por software (FFmpeg) si [buildAudioRenderers] no lo dejó ya en la lista.
      * Con [EXTENSION_RENDERER_MODE_ON] Media3 lo instancia solo cuando el `.aar` está en el classpath;
      * esta red de seguridad por reflexión cubre el caso de que falle esa carga silenciosa (proguard,
-     * versión distinta del `.aar`, modo de extensiones cambiado). Va al final: el hardware siempre manda,
-     * y FFmpeg solo entra en pistas que ningún decoder del dispositivo admite (DTS, DTS-HD, TrueHD…).
+     * versión distinta del `.aar`, modo de extensiones cambiado). Sin "forzar audio por software" va al
+     * final (el hardware siempre manda, y FFmpeg solo entra en pistas que ningún decoder del dispositivo
+     * admite: DTS, DTS-HD, TrueHD…). Con él, al principio: E-AC-3/AC-3/DTS/TrueHD se decodifican a PCM.
      */
     override fun buildAudioRenderers(
         context: Context,
@@ -141,8 +156,13 @@ private class ShieldRenderersFactory(context: Context) : DefaultRenderersFactory
                 AudioRendererEventListener::class.java,
                 AudioSink::class.java,
             )
-            out.add(ctor.newInstance(eventHandler, eventListener, audioSink) as Renderer)
-            Log.i("Media3Factory", "Decoder de audio por software (FFmpeg) disponible")
+            val renderer = ctor.newInstance(eventHandler, eventListener, audioSink) as Renderer
+            // PREFER: índice 0 (por delante de MediaCodecAudioRenderer) para que todo pase por PCM.
+            if (preferSoftwareAudio) out.add(0, renderer) else out.add(renderer)
+            Log.i(
+                "Media3Factory",
+                if (preferSoftwareAudio) "Audio por software (FFmpeg → PCM) al frente" else "Decoder de audio por software (FFmpeg) disponible",
+            )
         }.onFailure { Log.w("Media3Factory", "Sin decoder de audio por software: ${it.message}") }
     }
 

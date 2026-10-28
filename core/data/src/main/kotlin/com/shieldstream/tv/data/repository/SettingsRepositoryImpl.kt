@@ -88,6 +88,22 @@ class SettingsRepositoryImpl @Inject constructor(
         debridFlow.value = service
     }
 
+    private val forceSoftwareAudioFlow = MutableStateFlow(prefs.getBoolean(KEY_FORCE_SOFTWARE_AUDIO, false))
+    override val forceSoftwareAudio: Flow<Boolean> = forceSoftwareAudioFlow
+
+    override suspend fun setForceSoftwareAudio(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_FORCE_SOFTWARE_AUDIO, enabled).apply()
+        forceSoftwareAudioFlow.value = enabled
+    }
+
+    private val useExternalPlayerFlow = MutableStateFlow(prefs.getBoolean(KEY_USE_EXTERNAL_PLAYER, false))
+    override val useExternalPlayer: Flow<Boolean> = useExternalPlayerFlow
+
+    override suspend fun setUseExternalPlayer(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_USE_EXTERNAL_PLAYER, enabled).apply()
+        useExternalPlayerFlow.value = enabled
+    }
+
     override val language: AppLanguage get() = Lang.current
 
     /** commit() (no apply): la app se reinicia justo después y el valor tiene que estar ya en disco. */
@@ -131,6 +147,8 @@ class SettingsRepositoryImpl @Inject constructor(
         const val KEY_SPANISH_ONLY = "spanish_only_sources"
         const val KEY_DEBRID = "debrid_service"
         const val KEY_PROVIDERS_OFF = "source_providers_off"
+        const val KEY_FORCE_SOFTWARE_AUDIO = "force_software_audio"
+        const val KEY_USE_EXTERNAL_PLAYER = "use_external_player"
         const val DEFAULT_BUFFER = 80
         const val MIN_BUFFER = 50
         const val MAX_BUFFER = 100

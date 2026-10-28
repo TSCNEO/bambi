@@ -80,6 +80,9 @@ fun TracksPanel(
     syncDetail: String = "",
     onExternalOff: () -> Unit = {},
     onOpenSync: () -> Unit = {},
+    forceSoftwareAudio: Boolean = false,
+    onToggleSoftwareAudio: () -> Unit = {},
+    onOpenExternalPlayer: () -> Unit = {},
 ) {
     var tracks by remember(player) { mutableStateOf(player.currentTracks) }
     DisposableEffect(player) {
@@ -112,7 +115,7 @@ fun TracksPanel(
             )
         } else {
             val hasSpanish = remember(tracks) { hasEmbeddedSubtitle(tracks, Lang.current.code) }
-            val audio = remember(tracks) { audioOptions(tracks, player) }
+            val audio = remember(tracks, forceSoftwareAudio) { audioOptions(tracks, player, forceSoftwareAudio, onToggleSoftwareAudio, onOpenExternalPlayer) }
             val text = remember(tracks, hasSpanish, externalLabel, syncDetail) {
                 buildList {
                     add(externalOption(hasSpanish) { showExternal = true })
@@ -381,7 +384,13 @@ private fun hasEmbeddedSubtitle(tracks: Tracks, language: String): Boolean =
     }
 
 @OptIn(UnstableApi::class)
-private fun audioOptions(tracks: Tracks, player: Player): List<TrackOption> {
+private fun audioOptions(
+    tracks: Tracks,
+    player: Player,
+    forceSoftwareAudio: Boolean,
+    onToggleSoftwareAudio: () -> Unit,
+    onOpenExternalPlayer: () -> Unit,
+): List<TrackOption> {
     // Pistas de audio presentes en el archivo: (grupo, índice).
     val all = buildList {
         tracks.groups.forEachIndexed { groupIndex, group ->
@@ -394,23 +403,46 @@ private fun audioOptions(tracks: Tracks, player: Player): List<TrackOption> {
     // se listan igualmente con el aviso en vez de dejar la columna vacía y el mensaje "Sin pistas de audio",
     // que parece un fallo de la app y no deja entender qué pasa.
     val unsupportedOnly = supported.isEmpty() && all.isNotEmpty()
-    return (if (unsupportedOnly) all else supported).map { (groupIndex, i) ->
-        val group = tracks.groups[groupIndex]
-        val f = group.getTrackFormat(i)
-        val language = languageName(f.language)
-        TrackOption(
-            key = "a_${groupIndex}_$i",
-            title = language ?: f.label ?: tr("Pista ${i + 1}", "Track ${i + 1}"),
-            detail = listOfNotNull(
-                f.label?.takeIf { it != language },
-                audioTech(f),
-                if (unsupportedOnly) tr("Sin soporte HW/SW", "No HW/SW support") else null,
-            ).distinct().joinToString(" · "),
-            selected = group.isTrackSelected(i),
-            onSelect = {
-                player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-                    .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, i))
-                    .build()
+    return buildList {
+        // Controles adicionales en la columna de audio
+        add(
+            TrackOption(
+                key = "a_sw_audio",
+                title = tr("Audio por software (PCM)", "Software audio (PCM)"),
+                detail = tr("Decodifica E-AC-3, DTS y TrueHD en la CPU", "Decodes E-AC-3, DTS and TrueHD on CPU"),
+                selected = forceSoftwareAudio,
+                onSelect = onToggleSoftwareAudio,
+            ),
+        )
+        add(
+            TrackOption(
+                key = "a_ext_player",
+                title = tr("Abrir en reproductor externo ↗", "Open in external player ↗"),
+                detail = tr("Just Player, VLC… (continúa donde vas)", "Just Player, VLC… (continues where you are)"),
+                selected = false,
+                onSelect = onOpenExternalPlayer,
+            ),
+        )
+        addAll(
+            (if (unsupportedOnly) all else supported).map { (groupIndex, i) ->
+                val group = tracks.groups[groupIndex]
+                val f = group.getTrackFormat(i)
+                val language = languageName(f.language)
+                TrackOption(
+                    key = "a_${groupIndex}_$i",
+                    title = language ?: f.label ?: tr("Pista ${i + 1}", "Track ${i + 1}"),
+                    detail = listOfNotNull(
+                        f.label?.takeIf { it != language },
+                        audioTech(f),
+                        if (unsupportedOnly) tr("Sin soporte HW/SW", "No HW/SW support") else null,
+                    ).distinct().joinToString(" · "),
+                    selected = group.isTrackSelected(i),
+                    onSelect = {
+                        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, i))
+                            .build()
+                    },
+                )
             },
         )
     }

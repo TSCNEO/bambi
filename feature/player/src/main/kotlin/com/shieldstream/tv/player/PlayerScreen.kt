@@ -96,6 +96,7 @@ fun PlayerScreen(
     val subtitleTiming by viewModel.subtitleTiming.collectAsStateWithLifecycle()
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
     val thumbnailsEnabled by viewModel.seekThumbnails.collectAsStateWithLifecycle()
+    val forceSoftwareAudio by viewModel.forceSoftwareAudio.collectAsStateWithLifecycle()
     val nextUp by viewModel.nextUp.collectAsStateWithLifecycle()
     val skipPrompt by viewModel.skipPrompt.collectAsStateWithLifecycle()
     // "Siguiente episodio": se sale a la ficha, que busca las fuentes del siguiente y lo pone.
@@ -390,7 +391,7 @@ fun PlayerScreen(
             }
         }
 
-        if (tracksOpen && state == PlayerUiState.Playing) {
+        if (tracksOpen && (state is PlayerUiState.Playing || state is PlayerUiState.External)) {
             player?.let {
                 TracksPanel(
                     player = it,
@@ -405,6 +406,12 @@ fun PlayerScreen(
                         tracksOpen = false
                         syncOpen = true
                     },
+                    forceSoftwareAudio = forceSoftwareAudio,
+                    onToggleSoftwareAudio = { viewModel.toggleForceSoftwareAudio() },
+                    onOpenExternalPlayer = {
+                        tracksOpen = false
+                        viewModel.openInExternalPlayer()
+                    },
                 )
             }
         }
@@ -412,7 +419,7 @@ fun PlayerScreen(
         // Abajo a la derecha, compactos (estilo Netflix): suben un poco si están los controles para no tapar la barra.
         val pillBottom by animateDpAsState(if (controlsVisible) 116.dp else 48.dp, label = "pillBottom")
         val pillModifier = Modifier.align(Alignment.BottomEnd).padding(end = 48.dp, bottom = pillBottom)
-        if (state == PlayerUiState.Playing && !tracksOpen) {
+        if (state is PlayerUiState.Playing && !tracksOpen) {
             (nextUp as? NextUpUiState.Showing)?.let { next ->
                 // Relleno = cuenta atrás de los últimos 10 s (al llenarse, pasa solo).
                 val target = if (next.secondsLeft <= NEXT_FILL_SECONDS) 1f - next.secondsLeft / NEXT_FILL_SECONDS.toFloat() else 0f
@@ -429,6 +436,7 @@ fun PlayerScreen(
         when (val s = state) {
             is PlayerUiState.Resolving -> StatusOverlay(title = title, message = s.message, loading = true)
             is PlayerUiState.Error -> StatusOverlay(title = title, message = s.message, loading = false)
+            is PlayerUiState.External -> StatusOverlay(title = title, message = s.message, loading = false)
             PlayerUiState.Playing -> Unit
         }
     }

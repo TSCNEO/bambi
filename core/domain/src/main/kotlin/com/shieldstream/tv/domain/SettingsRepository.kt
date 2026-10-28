@@ -52,4 +52,16 @@ interface SettingsRepository {
     /** Servicio debrid en uso (Real-Debrid por defecto). */
     val debridService: Flow<DebridService>
     suspend fun setDebridService(service: DebridService)
+
+    /**
+     * Audio por software (PCM): las extensiones (FFmpeg) van DELANTE del decodificador del sistema, así que
+     * E-AC-3, AC-3, DTS y TrueHD se decodifican en la CPU a PCM. Quita el silencio en TVs estéreo o cuando el
+     * sistema manda bitstream que la tele no sabe decodificar. Cuesta más CPU (sin Atmos/DTS:X).
+     */
+    val forceSoftwareAudio: Flow<Boolean>
+    suspend fun setForceSoftwareAudio(enabled: Boolean)
+
+    /** Reproducción: abrir el enlace resuelto en un reproductor externo (Just Player, VLC…) en vez del interno. */
+    val useExternalPlayer: Flow<Boolean>
+    suspend fun setUseExternalPlayer(enabled: Boolean)
 }

@@ -1,6 +1,9 @@
 package com.shieldstream.tv.player
 
 import com.shieldstream.tv.model.tr
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.util.Log
 import androidx.annotation.OptIn
 import androidx.lifecycle.ViewModel
@@ -32,6 +35,7 @@ import androidx.media3.common.PlaybackException
 import com.shieldstream.tv.model.ExternalSubtitle
 import com.shieldstream.tv.model.SubtitleQuery
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -55,6 +59,8 @@ sealed interface PlayerUiState {
     data class Resolving(val message: String, val attempt: Int, val total: Int) : PlayerUiState
     data object Playing : PlayerUiState
     data class Error(val message: String) : PlayerUiState
+    /** El vídeo se ve en un reproductor externo (Just Player, VLC…): Bambi se queda en segundo plano. */
+    data class External(val message: String) : PlayerUiState
 }
 
 /** Estado del apartado "Subtítulos externos" del panel. */
@@ -83,6 +89,7 @@ sealed interface ExternalSubsState {
 @OptIn(UnstableApi::class)
 @HiltViewModel
 class PlayerViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val media3Factory: Media3Factory,
     private val resolveStreamUseCase: ResolveStreamUseCase,
     private val settings: SettingsRepository,
@@ -115,6 +122,14 @@ class PlayerViewModel @Inject constructor(
     /** Ajuste "Búsqueda en el reproductor": miniaturas (true) o saltos de 10 s (false). */
     val seekThumbnails: StateFlow<Boolean> = settings.seekThumbnails
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    /** Ajuste "Forzar audio por software (PCM)": FFmpeg decodifica (E-AC-3, DTS, TrueHD…) en la CPU. */
+    val forceSoftwareAudio: StateFlow<Boolean> = settings.forceSoftwareAudio
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** Ajuste "Reproductor externo por defecto": el enlace se abre en Just Player / VLC. */
+    private val useExternalPlayer: StateFlow<Boolean> = settings.useExternalPlayer
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     private val progressKey: String? = holder.progressKey.value
 
@@ -244,6 +259,16 @@ class PlayerViewModel @Inject constructor(
                         Log.i("PlayerVM", "Fuente ${index + 1}/${queue.size}: ${java.net.URLDecoder.decode(result.url.substringAfterLast('/'), "UTF-8").take(120)}")
                         playingFileName = source.fileName ?: source.title
                         val resumeAt = savedResumePosition()
+                        // Ajustes → "Reproductor externo por defecto": se abre ahí directamente (Just Player, VLC…).
+                        if (useExternalPlayer.value) {
+                            resumePositionMs = resumeAt
+                            _uiState.value = PlayerUiState.Playing
+                            if (openExternalPlayer()) {
+                                _uiState.value = PlayerUiState.External(externalMessage())
+                                return@launch
+                            }
+                            // Sin reproductor externo instalado: se sigue con el interno (aviso ya mostrado).
+                        }
                         createAndPlay(result.url, startPositionMs = resumeAt)
                         if (resumeAt > 0) _notice.value = tr("Reanudando desde ${formatTime(resumeAt)}", "Resuming from ${formatTime(resumeAt)}")
                         _uiState.value = PlayerUiState.Playing
@@ -283,6 +308,88 @@ class PlayerViewModel @Inject constructor(
     fun clearNotice() {
         _notice.value = null
     }
+
+    // -----------------------------------------------------------------------
+    // Audio por software y reproductor externo
+    // -----------------------------------------------------------------------
+
+    /**
+     * Ajuste "Forzar audio por software (PCM)" desde el panel de pistas. Se guarda y se recrea el reproductor en
+     * la misma posición (±2 s): el renderer FFmpeg va delante, así que E-AC-3/AC-3/DTS/TrueHD salen en PCM.
+     * Las pistas ya no valen (las elige el nuevo ExoPlayer), pero el progreso del vídeo se conserva en la cola.
+     */
+    fun toggleForceSoftwareAudio() {
+        viewModelScope.launch {
+            val enabled = !forceSoftwareAudio.value
+            settings.setForceSoftwareAudio(enabled)
+            _notice.value = if (enabled) {
+                tr("Audio por software (PCM): se decodifica en el equipo", "Software audio (PCM): decoded on the device")
+            } else {
+                tr("Audio del sistema (HDMI): vuelve el bitstream", "System audio (HDMI): bitstream is back")
+            }
+            reloadAtCurrentPosition()
+        }
+    }
+
+    /** Vuelve a crear el reproductor (nuevo renderers factory) sin perder el punto de reproducción. */
+    private fun reloadAtCurrentPosition() {
+        val url = resolvedUrl ?: return
+        val current = _player.value
+        val position = current?.currentPosition ?: resumePositionMs
+        if (current != null) {
+            resumePositionMs = position
+            reference.pause(position)
+            current.release()
+            if (_player.value === current) _player.value = null
+        }
+        saveProgress()
+        viewModelScope.launch { createAndPlay(url, position) }
+    }
+
+    /**
+     * Abre el enlace ya resuelto en un reproductor externo (Just Player, VLC, MX…): ACTION_VIEW con video,
+     * título y posición para que continúe donde está. Se ofrece un selector si hay varios instalados.
+     * Devuelve false si no hay ninguno (no se puede lanzar el Intent).
+     */
+    fun openExternalPlayer(): Boolean {
+        val url = resolvedUrl
+        if (url == null) {
+            _notice.value = tr("Todavía no hay enlace: espera a que cargue la fuente", "No link yet: wait for the source to load")
+            return false
+        }
+        val position = _player.value?.currentPosition ?: resumePositionMs
+        // Se guarda el punto: al volver del reproductor externo (o a la ficha) se sigue desde ahí.
+        if (position > 0) resumePositionMs = position
+        saveProgress()
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(Uri.parse(url), "video/*")
+            putExtra("title", title.value)
+            putExtra("position", position)
+            putExtra("return_result", true)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return runCatching {
+            appContext.startActivity(Intent.createChooser(intent, tr("Abrir con…", "Open with…")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            true
+        }.getOrElse { e ->
+            Log.w("PlayerVM", "Sin reproductor externo: ${e.message}")
+            _notice.value = tr(
+                "No hay ningún reproductor externo instalado (Just Player, VLC…)",
+                "No external player installed (Just Player, VLC…)",
+            )
+            false
+        }
+    }
+
+    /** Botón "Abrir en reproductor externo" del panel: lanza el Intent y deja la pantalla en espera. */
+    fun openInExternalPlayer() {
+        if (openExternalPlayer()) _uiState.value = PlayerUiState.External(externalMessage())
+    }
+
+    private fun externalMessage(): String = tr(
+        "El vídeo se está viendo en el reproductor externo.\nPulsa Atrás para volver a Bambi.",
+        "The video is playing in the external player.\nPress Back to return to Bambi.",
+    )
 
     // -----------------------------------------------------------------------
     // Subtítulos externos
@@ -768,6 +875,8 @@ class PlayerViewModel @Inject constructor(
     /**
      * Ciclo de vida: al pulsar Home en la Shield (ON_STOP) se guarda el progreso y se libera el
      * decoder y el modo HDMI (DV/HDR). Al volver (ON_START) se recrea el player en la misma posición.
+     * Con reproductor externo en marcha (ON_STOP al abrirlo) se guarda igual, pero la posición de vuelta
+     * es la que dejó anotada [openExternalPlayer].
      */
     fun onStop() {
         saveProgress()
@@ -783,12 +892,18 @@ class PlayerViewModel @Inject constructor(
     fun onStart() {
         val url = resolvedUrl ?: return
         if (_player.value != null) return
-        viewModelScope.launch { createAndPlay(url, resumePositionMs) }
+        // Vuelta del reproductor externo: se retoma el vídeo en Bambi donde se quedó.
+        val fromExternal = _uiState.value is PlayerUiState.External
+        viewModelScope.launch {
+            createAndPlay(url, resumePositionMs)
+            if (fromExternal) _uiState.value = PlayerUiState.Playing
+        }
     }
 
     private suspend fun createAndPlay(url: String, startPositionMs: Long) {
         val maxBuffer = settings.maxBufferSeconds.first()
-        val player = media3Factory.createPlayer(maxBuffer)
+        // "Forzar audio por software": el renderer FFmpeg va el primero (PCM en la CPU).
+        val player = media3Factory.createPlayer(maxBuffer, forceSoftwareAudio = forceSoftwareAudio.value)
         player.addListener(
             object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {

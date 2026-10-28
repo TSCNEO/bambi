@@ -112,6 +112,8 @@ fun SettingsScreen(
                     onEditKey = viewModel::openEditor,
                     onBuffer = viewModel::changeBuffer,
                     onSeekMode = viewModel::setSeekThumbnails,
+                    onSoftwareAudio = viewModel::setForceSoftwareAudio,
+                    onExternalPlayer = viewModel::setUseExternalPlayer,
                     onDebrid = viewModel::setDebrid,
                     onOpenSetup = onOpenSetup,
                     onLanguage = { language -> viewModel.setLanguage(language) { restartApp(context) } },
@@ -142,6 +144,8 @@ private fun SettingsList(
     onEditKey: (ApiService) -> Unit,
     onBuffer: (Int) -> Unit,
     onSeekMode: (Boolean) -> Unit,
+    onSoftwareAudio: (Boolean) -> Unit,
+    onExternalPlayer: (Boolean) -> Unit,
     onDebrid: (DebridService) -> Unit,
     onOpenSetup: () -> Unit,
     onLanguage: (AppLanguage) -> Unit,
@@ -244,6 +248,8 @@ private fun SettingsList(
             item { LanguageCard(current = state.language, onApply = onLanguage) }
             item { SectionTitle(tr("Reproducción", "Playback")) }
             item { SeekModeCard(thumbnails = state.seekThumbnails, onChange = onSeekMode) }
+            item { SoftwareAudioCard(enabled = state.forceSoftwareAudio, onChange = onSoftwareAudio) }
+            item { ExternalPlayerCard(enabled = state.useExternalPlayer, onChange = onExternalPlayer) }
             item { AutoNextCard() }
             item { BufferCard(seconds = state.bufferSeconds, onChange = onBuffer) }
             item { SectionTitle(tr("Acerca de", "About")) }
@@ -573,6 +579,89 @@ private fun AutoNextCard(viewModel: SettingsViewModel = hiltViewModel()) {
     }
 }
 
+@Composable
+private fun SoftwareAudioCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
+    FocusCard(
+        onClick = { onChange(!enabled) },
+        modifier = Modifier.onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when (event.key) {
+                Key.DirectionLeft -> { onChange(true); true }
+                Key.DirectionRight -> { onChange(false); true }
+                else -> false
+            }
+        },
+    ) { _ ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Forzar audio por software (PCM)", "Force software audio (PCM)"),
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                )
+                Text(
+                    tr(
+                        "Decodifica E-AC-3, DTS y TrueHD en la CPU a PCM estéreo/multicanal. Soluciona el silencio en barras o TVs que no soportan bitstream HDMI.",
+                        "Decodes E-AC-3, DTS and TrueHD on CPU to PCM stereo/multichannel. Fixes silence on soundbars or TVs without HDMI bitstream support.",
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
+                )
+            }
+            Spacer(Modifier.width(24.dp))
+            Row(
+                Modifier
+                    .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(50))
+                    .padding(4.dp),
+            ) {
+                SegmentOption(tr("Sí", "On"), selected = enabled)
+                SegmentOption(tr("No", "Off"), selected = !enabled)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExternalPlayerCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
+    FocusCard(
+        onClick = { onChange(!enabled) },
+        modifier = Modifier.onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when (event.key) {
+                Key.DirectionLeft -> { onChange(true); true }
+                Key.DirectionRight -> { onChange(false); true }
+                else -> false
+            }
+        },
+    ) { _ ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    tr("Reproductor externo por defecto", "Default external player"),
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                )
+                Text(
+                    tr(
+                        "Abre automáticamente el vídeo en Just Player, VLC u otro reproductor externo instalado al pulsar Reproducir.",
+                        "Automatically opens the video in Just Player, VLC or another installed external player when you press Play.",
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
+                )
+            }
+            Spacer(Modifier.width(24.dp))
+            Row(
+                Modifier
+                    .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(50))
+                    .padding(4.dp),
+            ) {
+                SegmentOption(tr("Sí", "On"), selected = enabled)
+                SegmentOption(tr("No", "Off"), selected = !enabled)
+            }
+        }
+    }
+}
 @Composable
 private fun SeekModeCard(thumbnails: Boolean, onChange: (Boolean) -> Unit) {
     FocusCard(
