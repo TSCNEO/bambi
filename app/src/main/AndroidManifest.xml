@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- El .aar de FFmpeg (audio por software) se compiló con minSdk 24, pero nuestro minSdk es 21. Se fuerza
+         el merge: el decoder se carga por reflexión y FfmpegLibrary.isAvailable() devuelve false si el .so no
+         carga (API < 24), así que en esos dispositivos simplemente no se usa. -->
+    <uses-sdk tools:overrideLibrary="androidx.media3.decoder.ffmpeg" />
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />

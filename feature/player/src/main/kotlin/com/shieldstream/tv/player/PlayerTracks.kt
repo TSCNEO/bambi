@@ -381,30 +381,38 @@ private fun hasEmbeddedSubtitle(tracks: Tracks, language: String): Boolean =
     }
 
 @OptIn(UnstableApi::class)
-private fun audioOptions(tracks: Tracks, player: Player): List<TrackOption> = buildList {
-    tracks.groups.forEachIndexed { groupIndex, group ->
-        if (group.type != C.TRACK_TYPE_AUDIO) return@forEachIndexed
-        for (i in 0 until group.length) {
-            if (!group.isTrackSupported(i)) continue
-            val f = group.getTrackFormat(i)
-            val language = languageName(f.language)
-            add(
-                TrackOption(
-                    key = "a_${groupIndex}_$i",
-                    title = language ?: f.label ?: tr("Pista ${size + 1}", "Track ${size + 1}"),
-                    detail = listOfNotNull(
-                        f.label?.takeIf { it != language },
-                        audioTech(f),
-                    ).distinct().joinToString(" · "),
-                    selected = group.isTrackSelected(i),
-                    onSelect = {
-                        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-                            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, i))
-                            .build()
-                    },
-                ),
-            )
+private fun audioOptions(tracks: Tracks, player: Player): List<TrackOption> {
+    // Pistas de audio presentes en el archivo: (grupo, índice).
+    val all = buildList {
+        tracks.groups.forEachIndexed { groupIndex, group ->
+            if (group.type != C.TRACK_TYPE_AUDIO) return@forEachIndexed
+            for (i in 0 until group.length) add(groupIndex to i)
         }
+    }
+    val supported = all.filter { (groupIndex, i) -> tracks.groups[groupIndex].isTrackSupported(i) }
+    // Si el archivo trae audio pero NADA es reproducible (ni hardware ni los decoders software: FFmpeg/librerías),
+    // se listan igualmente con el aviso en vez de dejar la columna vacía y el mensaje "Sin pistas de audio",
+    // que parece un fallo de la app y no deja entender qué pasa.
+    val unsupportedOnly = supported.isEmpty() && all.isNotEmpty()
+    return (if (unsupportedOnly) all else supported).map { (groupIndex, i) ->
+        val group = tracks.groups[groupIndex]
+        val f = group.getTrackFormat(i)
+        val language = languageName(f.language)
+        TrackOption(
+            key = "a_${groupIndex}_$i",
+            title = language ?: f.label ?: tr("Pista ${i + 1}", "Track ${i + 1}"),
+            detail = listOfNotNull(
+                f.label?.takeIf { it != language },
+                audioTech(f),
+                if (unsupportedOnly) tr("Sin soporte HW/SW", "No HW/SW support") else null,
+            ).distinct().joinToString(" · "),
+            selected = group.isTrackSelected(i),
+            onSelect = {
+                player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+                    .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, i))
+                    .build()
+            },
+        )
     }
 }
 

@@ -14,6 +14,8 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioRendererEventListener
+import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.shieldstream.tv.media.mkv.LenientExtractorsFactory
 import androidx.media3.exoplayer.Renderer
@@ -56,6 +58,10 @@ class Media3Factory @Inject constructor(
 
         val renderersFactory = ShieldRenderersFactory(context)
             .setEnableDecoderFallback(true)
+            // Decodificadores de extensión (FFmpeg, libgav1, dav1d…): van DETRÁS de los de hardware, así que
+            // solo entran cuando ningún decoder del dispositivo admite la pista. Imprescindible para DTS /
+            // DTS-HD / TrueHD en TVs sin licencia (p. ej. Chromecast con Google TV 4K).
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setMediaCodecSelector(codecSelector)
 
         val trackSelector = DefaultTrackSelector(context).apply {
@@ -100,6 +106,46 @@ class Media3Factory @Inject constructor(
 /** Sustituye el renderer de vídeo por defecto por uno que entiende Dolby Vision perfil 7. */
 @OptIn(UnstableApi::class)
 private class ShieldRenderersFactory(context: Context) : DefaultRenderersFactory(context) {
+    /**
+     * Añade el decoder de audio por software (FFmpeg) si [buildAudioRenderers] no lo dejó ya en la lista.
+     * Con [EXTENSION_RENDERER_MODE_ON] Media3 lo instancia solo cuando el `.aar` está en el classpath;
+     * esta red de seguridad por reflexión cubre el caso de que falle esa carga silenciosa (proguard,
+     * versión distinta del `.aar`, modo de extensiones cambiado). Va al final: el hardware siempre manda,
+     * y FFmpeg solo entra en pistas que ningún decoder del dispositivo admite (DTS, DTS-HD, TrueHD…).
+     */
+    override fun buildAudioRenderers(
+        context: Context,
+        extensionRendererMode: Int,
+        mediaCodecSelector: MediaCodecSelector,
+        enableDecoderFallback: Boolean,
+        audioSink: AudioSink,
+        eventHandler: Handler,
+        eventListener: AudioRendererEventListener,
+        out: ArrayList<Renderer>,
+    ) {
+        super.buildAudioRenderers(
+            context,
+            extensionRendererMode,
+            mediaCodecSelector,
+            enableDecoderFallback,
+            audioSink,
+            eventHandler,
+            eventListener,
+            out,
+        )
+        if (out.any { it.name.contains("ffmpeg", ignoreCase = true) }) return
+        runCatching {
+            val clazz = Class.forName("androidx.media3.decoder.ffmpeg.FfmpegAudioRenderer")
+            val ctor = clazz.getConstructor(
+                Handler::class.java,
+                AudioRendererEventListener::class.java,
+                AudioSink::class.java,
+            )
+            out.add(ctor.newInstance(eventHandler, eventListener, audioSink) as Renderer)
+            Log.i("Media3Factory", "Decoder de audio por software (FFmpeg) disponible")
+        }.onFailure { Log.w("Media3Factory", "Sin decoder de audio por software: ${it.message}") }
+    }
+
     override fun buildVideoRenderers(
         context: Context,
         extensionRendererMode: Int,

@@ -55,8 +55,8 @@ android {
         minSdk = 21
         targetSdk = 35
         // Al publicar una versión nueva: subir versionCode (+1) y versionName (1.0.1, 1.1.0…).
-        versionCode = 112
-        versionName = "1.1.2"
+        versionCode = 113
+        versionName = "1.1.3"
         manifestPlaceholders["appLabel"] = "@string/app_name"
 
         buildConfigField("String", "UPSTREAM_VERSION", "\"${getUpstreamVersion()}\"")
@@ -137,6 +137,10 @@ dependencies {
     implementation(libs.coil)
     // Decoder AV1 por software (libgav1, compilado con _setup_av1.sh). Lo usa core:media por reflexión.
     implementation(files("libs/media3-decoder-av1-1.6.0.aar"))
+    // Decoder de audio por software (FFmpeg: DTS, DTS-HD, TrueHD, AC3/E-AC3…). Sin él, en TVs sin licencia
+    // DTS/TrueHD (Chromecast con Google TV 4K) las pistas se marcan como no soportadas y la película queda muda.
+    // Lo carga core:media por reflexión (FfmpegAudioRenderer), así que este módulo no depende de él al compilar.
+    implementation(files("libs/media3-decoder-ffmpeg-1.6.0.aar"))
     implementation(libs.kotlinx.coroutines.android)
 
     implementation(libs.hilt.android)
