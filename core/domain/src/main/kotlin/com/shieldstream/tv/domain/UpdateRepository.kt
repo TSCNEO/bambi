@@ -11,6 +11,7 @@ data class AppVersion(
     val updateRepo: String,
     /** Versión base del repositorio upstream (grodri99/bambi) sobre la que va este fork. "" = desconocida. */
     val upstreamVersion: String = "",
+    val apkName: String = "Bambi.apk",
 )
 
 /** Versión publicada en GitHub. */

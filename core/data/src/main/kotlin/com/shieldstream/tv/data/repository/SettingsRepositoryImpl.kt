@@ -112,6 +112,36 @@ class SettingsRepositoryImpl @Inject constructor(
         autoFrameRateFlow.value = enabled
     }
 
+    private val relayUrlFlow = MutableStateFlow(tokenStore.getSecret("relay_url"))
+    override val relayUrl: Flow<String?> = relayUrlFlow
+    override suspend fun setRelayUrl(url: String?) {
+        val clean = url?.trim()?.takeIf { it.isNotEmpty() }
+        tokenStore.setSecret("relay_url", clean)
+        relayUrlFlow.value = clean
+    }
+
+    private val relayPinFlow = MutableStateFlow(tokenStore.getSecret("relay_pin"))
+    override val relayPin: Flow<String?> = relayPinFlow
+    override suspend fun setRelayPin(pin: String?) {
+        val clean = pin?.trim()?.takeIf { it.isNotEmpty() }
+        tokenStore.setSecret("relay_pin", clean)
+        relayPinFlow.value = clean
+    }
+
+    private val enableRelayAdFlow = MutableStateFlow(prefs.getBoolean(KEY_ENABLE_RELAY_AD, false))
+    override val enableRelayAllDebrid: Flow<Boolean> = enableRelayAdFlow
+    override suspend fun setEnableRelayAllDebrid(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_ENABLE_RELAY_AD, enabled).apply()
+        enableRelayAdFlow.value = enabled
+    }
+
+    private val enableRelayRdFlow = MutableStateFlow(prefs.getBoolean(KEY_ENABLE_RELAY_RD, false))
+    override val enableRelayRealDebrid: Flow<Boolean> = enableRelayRdFlow
+    override suspend fun setEnableRelayRealDebrid(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_ENABLE_RELAY_RD, enabled).apply()
+        enableRelayRdFlow.value = enabled
+    }
+
     override val language: AppLanguage get() = Lang.current
 
     /** commit() (no apply): la app se reinicia justo después y el valor tiene que estar ya en disco. */
@@ -158,6 +188,8 @@ class SettingsRepositoryImpl @Inject constructor(
         const val KEY_FORCE_SOFTWARE_AUDIO = "force_software_audio"
         const val KEY_USE_EXTERNAL_PLAYER = "use_external_player"
         const val KEY_AUTO_FRAME_RATE = "auto_frame_rate"
+        const val KEY_ENABLE_RELAY_AD = "enable_relay_alldebrid"
+        const val KEY_ENABLE_RELAY_RD = "enable_relay_realdebrid"
         const val DEFAULT_BUFFER = 80
         const val MIN_BUFFER = 50
         const val MAX_BUFFER = 100

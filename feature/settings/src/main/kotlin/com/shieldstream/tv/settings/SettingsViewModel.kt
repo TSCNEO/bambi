@@ -57,6 +57,10 @@ sealed interface SettingsUiState {
         val autoFrameRate: Boolean,
         /** Servicio debrid en uso. */
         val debrid: DebridService,
+        val relayUrl: String?,
+        val relayPin: String?,
+        val enableRelayAllDebrid: Boolean,
+        val enableRelayRealDebrid: Boolean,
         val editor: KeyEditor?,
         /** Idioma con el que arrancó la app (cambiarlo la reinicia). */
         val language: AppLanguage = Lang.current,
@@ -91,12 +95,31 @@ class SettingsViewModel @Inject constructor(
         ) { buffer, thumbnails, debrid ->
             Triple(buffer, thumbnails, debrid)
         },
-        settings.forceSoftwareAudio,
-        settings.useExternalPlayer,
-        settings.autoFrameRate,
-    ) { (buffer, thumbnails, debrid), forceSoftware, useExternal, afr ->
-        SettingsPlayback(buffer, thumbnails, debrid, forceSoftware, useExternal, afr)
+        combine(
+            settings.forceSoftwareAudio,
+            settings.useExternalPlayer,
+            settings.autoFrameRate,
+        ) { forceSoftware, useExternal, afr ->
+            Triple(forceSoftware, useExternal, afr)
+        },
+        combine(
+            settings.relayUrl,
+            settings.relayPin,
+            settings.enableRelayAllDebrid,
+            settings.enableRelayRealDebrid,
+        ) { url, pin, ad, rd ->
+            RelaySettings(url, pin, ad, rd)
+        },
+    ) { (buffer, thumbnails, debrid), (forceSoftware, useExternal, afr), relay ->
+        SettingsPlayback(buffer, thumbnails, debrid, forceSoftware, useExternal, afr, relay.url, relay.pin, relay.ad, relay.rd)
     }
+
+data class RelaySettings(
+    val url: String?,
+    val pin: String?,
+    val ad: Boolean,
+    val rd: Boolean,
+)
 
 data class SettingsPlayback(
     val bufferSeconds: Int,
@@ -105,6 +128,10 @@ data class SettingsPlayback(
     val forceSoftwareAudio: Boolean,
     val useExternalPlayer: Boolean,
     val autoFrameRate: Boolean,
+    val relayUrl: String?,
+    val relayPin: String?,
+    val enableRelayAllDebrid: Boolean,
+    val enableRelayRealDebrid: Boolean,
 )
 
     val uiState: StateFlow<SettingsUiState> = combine(
@@ -128,6 +155,10 @@ data class SettingsPlayback(
             useExternalPlayer = play.useExternalPlayer,
             autoFrameRate = play.autoFrameRate,
             debrid = play.debrid,
+            relayUrl = play.relayUrl,
+            relayPin = play.relayPin,
+            enableRelayAllDebrid = play.enableRelayAllDebrid,
+            enableRelayRealDebrid = play.enableRelayRealDebrid,
             editor = edit,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState.Loading)
@@ -259,6 +290,22 @@ data class SettingsPlayback(
 
     fun showAllCategories() {
         viewModelScope.launch { settings.setHiddenCategories(emptySet()) }
+    }
+
+    fun setRelayUrl(url: String?) {
+        viewModelScope.launch { settings.setRelayUrl(url) }
+    }
+
+    fun setRelayPin(pin: String?) {
+        viewModelScope.launch { settings.setRelayPin(pin) }
+    }
+
+    fun setEnableRelayAllDebrid(enabled: Boolean) {
+        viewModelScope.launch { settings.setEnableRelayAllDebrid(enabled) }
+    }
+
+    fun setEnableRelayRealDebrid(enabled: Boolean) {
+        viewModelScope.launch { settings.setEnableRelayRealDebrid(enabled) }
     }
 
     fun setSeekThumbnails(enabled: Boolean) {

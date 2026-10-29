@@ -165,7 +165,7 @@ class UpdateRepositoryImpl @Inject constructor(
         if (release["draft"]?.jsonPrimitive?.contentOrNull == "true") return null
         val tag = release["tag_name"]?.jsonPrimitive?.contentOrNull ?: return null
         val assets = (release["assets"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
-        val apk = assets.firstOrNull { it.string("name") == APK_NAME }
+        val apk = assets.firstOrNull { it.string("name") == version.apkName }
             ?: assets.firstOrNull { it.string("name")?.endsWith(".apk", ignoreCase = true) == true }
             ?: return null
         return AppUpdate(

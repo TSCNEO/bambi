@@ -70,6 +70,23 @@ android {
         buildConfigField("String", "TRAKT_REDIRECT_URI", "\"$traktRedirectUri\"")
     }
 
+    flavorDimensions.add("version")
+    productFlavors {
+        create("stable") {
+            dimension = "version"
+            applicationId = "com.shieldstream.tv"
+            manifestPlaceholders["appLabel"] = "Bambi"
+            buildConfigField("String", "UPDATE_APK_NAME", "\"Bambi.apk\"")
+        }
+        create("beta") {
+            dimension = "version"
+            applicationId = "com.shieldstream.tv.beta"
+            versionNameSuffix = ""
+            manifestPlaceholders["appLabel"] = "Bambi Beta"
+            buildConfigField("String", "UPDATE_APK_NAME", "\"Bambi-Beta.apk\"")
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true

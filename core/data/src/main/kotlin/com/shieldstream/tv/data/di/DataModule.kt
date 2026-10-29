@@ -30,13 +30,24 @@ import com.shieldstream.tv.domain.MyListRepository
 import com.shieldstream.tv.domain.CustomCatalogRepository
 import dagger.Binds
 import dagger.Module
+import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
+import javax.inject.Named
 import javax.inject.Singleton
+import okhttp3.Interceptor
+import com.shieldstream.tv.data.security.DebridRelayInterceptor
 
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class DataModule {
+
+    companion object {
+        @Provides
+        @Singleton
+        @Named("debridRelay")
+        fun provideDebridRelayInterceptor(impl: DebridRelayInterceptor): Interceptor = impl
+    }
 
     @Binds
     @Singleton

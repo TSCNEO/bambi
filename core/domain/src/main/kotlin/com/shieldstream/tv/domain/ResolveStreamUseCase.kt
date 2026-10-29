@@ -52,7 +52,7 @@ class ResolveStreamUseCase(
             val service = source.debrid ?: tr("el servicio debrid", "the debrid service")
             emit(ResolveState.Progress(tr("Pidiendo el enlace a $service…", "Requesting the link from $service…")))
             when (val link = torrentio.resolve(url, service)) {
-                is DebridLink.Ready -> emit(ResolveState.Ready(link.url))
+                is DebridLink.Ready -> emit(ResolveState.Ready(wrapWithRelayIfNeeded(link.url, service)))
                 is DebridLink.Problem -> emit(ResolveState.Failed(link.message, notCached = link.notCached))
             }
             return@flow
@@ -168,6 +168,30 @@ class ResolveStreamUseCase(
             if (done(info)) return info
         }
         return null
+    }
+
+    private suspend fun wrapWithRelayIfNeeded(url: String, serviceName: String): String {
+        val urlLower = url.lowercase()
+        val isAllDebrid = serviceName.contains("alldebrid", ignoreCase = true) || urlLower.contains("alldebrid")
+        val isRealDebrid = serviceName.contains("real-debrid", ignoreCase = true) || serviceName.contains("realdebrid", ignoreCase = true) || urlLower.contains("real-debrid")
+
+        val relayUrl = settings.relayUrl.first()?.trim()?.takeIf { it.isNotBlank() }
+        val relayPin = settings.relayPin.first()?.trim()?.takeIf { it.isNotBlank() }
+
+        val useRelay = when {
+            isAllDebrid && settings.enableRelayAllDebrid.first() -> true
+            isRealDebrid && settings.enableRelayRealDebrid.first() -> true
+            else -> false
+        }
+
+        if (useRelay) {
+            if (relayUrl == null || relayPin == null) {
+                error(tr("Configuración de Debrid Relay incompleta", "Debrid Relay configuration incomplete"))
+            }
+            val encodedTarget = java.net.URLEncoder.encode(url, "UTF-8")
+            return "${relayUrl.trimEnd('/')}/stream?token=$relayPin&target=$encodedTarget"
+        }
+        return url
     }
 
     private companion object {

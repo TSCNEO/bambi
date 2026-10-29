@@ -28,6 +28,7 @@ object AppModule {
             isDebug = BuildConfig.DEBUG,
             updateRepo = "TSCNEO/bambi",
             upstreamVersion = BuildConfig.UPSTREAM_VERSION,
+            apkName = BuildConfig.UPDATE_APK_NAME,
         )
 
     @Provides

@@ -71,4 +71,16 @@ interface SettingsRepository {
      */
     val autoFrameRate: Flow<Boolean>
     suspend fun setAutoFrameRate(enabled: Boolean)
+
+    val relayUrl: Flow<String?>
+    suspend fun setRelayUrl(url: String?)
+
+    val relayPin: Flow<String?>
+    suspend fun setRelayPin(pin: String?)
+
+    val enableRelayAllDebrid: Flow<Boolean>
+    suspend fun setEnableRelayAllDebrid(enabled: Boolean)
+
+    val enableRelayRealDebrid: Flow<Boolean>
+    suspend fun setEnableRelayRealDebrid(enabled: Boolean)
 }

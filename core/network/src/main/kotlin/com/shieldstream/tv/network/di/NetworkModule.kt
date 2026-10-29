@@ -19,6 +19,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import java.util.concurrent.TimeUnit
+import javax.inject.Named
 import javax.inject.Singleton
 
 object ApiConfig {
@@ -43,7 +44,10 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideOkHttpClient(@ApplicationContext context: Context): OkHttpClient = OkHttpClient.Builder()
+    fun provideOkHttpClient(
+        @ApplicationContext context: Context,
+        @Named("debridRelay") debridRelayInterceptor: okhttp3.Interceptor? = null,
+    ): OkHttpClient = OkHttpClient.Builder()
         // Conexión corta: con una IP bloqueada (ver CloudflareFallbackDns) se pasa enseguida a la siguiente.
         .connectTimeout(5, TimeUnit.SECONDS)
         .dns(com.shieldstream.tv.network.CloudflareFallbackDns)
@@ -51,6 +55,7 @@ object NetworkModule {
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .apply {
+            if (debridRelayInterceptor != null) addInterceptor(debridRelayInterceptor)
             // Registro de peticiones solo en "Bambi (pruebas)": en la release no se imprimen URLs con claves.
             val debuggable = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
             if (debuggable) addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
