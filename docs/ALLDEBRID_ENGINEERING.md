@@ -1,4 +1,4 @@
-# Arquitectura de Integración AllDebrid (v1.1.9)
+# Arquitectura de Integración AllDebrid (v1.1.10)
 
 ## 1. Contexto y Problema Raíz
 
@@ -11,7 +11,9 @@ En versiones previas (upstream 1.0.6 y fork 1.1.8), los usuarios con **AllDebrid
 ### A. Addon Peerflix con AllDebrid
 - **Protocolo**: Peerflix implementa la API de Moch / Torrentio en servidor. Al configurar `torrentioStyle = true`, Bambi construye la ruta `$base/$config/stream/$type/$streamId.json`.
 - **Sintaxis de Idioma ISO**: Para proveedores que respetan estándar ISO (Peerflix), se mapea `language=es-ES` (en lugar de `language=spanish`), devolviendo de forma determinista enlaces cacheados en AllDebrid (`[AD+]`).
-- **Resolución**: Las URLs `/resolve/...` son consumidas por `TorrentioLinkResolverImpl`, capturando la redirección HTTP 302 hacia el CDN de descarga directa.
+- **Formato de URL propio (sin `/resolve/`)**: Peerflix devuelve `https://addon.peerflix.mov/alldebrid/{clave}/{hash}/{titulo}/{fileIdx}/{archivo}`. Torrentio usa `…/resolve/{servicio}/{clave}/{hash}/…`. Cualquier guarda que exija el literal `/resolve/` descarta el 100% de las fuentes de Peerflix (bug de v1.1.9 en `toDebridSource()`), y `parseResolveUrl()` no puede anclarse en el segmento `resolve` (vale -1): busca el primer segmento con forma de infoHash de 40 hex y toma `fileIdx` de `hashIndex+2` con fallback a `hashIndex+1`.
+- **Resolución**: `TorrentioLinkResolverImpl.isResolverHost()` reconoce ambos hosts (`torrentio`, `peerflix`); la primera redirección que sale del host del addon ya es el enlace del CDN del debrid, y los vídeos de aviso `/videos/...` se traducen a mensajes en español igual que en Torrentio.
+- **Fallback de idioma**: si la petición con `language=es-ES` devuelve `{"streams":[]}` (el tracker no etiquetó la release como española), se reintenta sin el filtro de idioma para no dejar la ficha sin fuentes.
 
 ### B. Cliente Nativo AllDebrid API v4 (The Pirate Bay, Knaben, Nyaa)
 Para resolver magnets en crudo directamente desde la aplicación sin depender de servidores proxy intermedios:
