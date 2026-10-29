@@ -403,7 +403,9 @@ class CatalogRepositoryImpl @Inject constructor(
      * que no sabrían qué archivo elegir).
      */
     private suspend fun scraperStreams(p: SourceProvider, item: CatalogItem, streamId: String): List<StreamSource> {
-        if (settings.debridService.first().viaTorrentio) return emptyList()
+        // Solo los debrids que Bambi resuelve desde la Shield (API propia): Real-Debrid y AllDebrid.
+        val debrid = settings.debridService.first()
+        if (debrid != DebridService.REAL_DEBRID && debrid != DebridService.ALLDEBRID) return emptyList()
         val parts = streamId.split(':')
         val season = parts.getOrNull(1)?.toIntOrNull()
         val episode = parts.getOrNull(2)?.toIntOrNull()
@@ -604,7 +606,10 @@ class CatalogRepositoryImpl @Inject constructor(
         val debrid = settings.debridService.first()
         val base = checkNotNull(p.baseUrl)
         // "Castellano primero": Torrentio también pone delante las releases en español (opción "language").
-        val language = if (settings.spanishFirst.first()) "language=spanish" else null
+        // Peerflix usa su propia clave (es-ES), no la de Torrentio.
+        val language = if (settings.spanishFirst.first()) {
+            if (p == SourceProvider.PEERFLIX) "language=es-ES" else "language=spanish"
+        } else null
         if (!debrid.viaTorrentio) {
             // Real-Debrid: el buscador sin clave (solo infoHash); la resolución es local con la API de RD.
             val streams = when {
