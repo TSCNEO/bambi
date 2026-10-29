@@ -97,12 +97,15 @@ fun SettingsScreen(
     val ready = state as? SettingsUiState.Ready
     val context = LocalContext.current
     val providers by viewModel.providers.collectAsStateWithLifecycle()
+    // Campo del relay que se está editando (null = ninguna ventana abierta).
+    // La ventana se pinta aquí, fuera de la lista: dentro de un item de LazyColumn no podría tapar la pantalla.
+    var relayEditing by remember { mutableStateOf<RelayField?>(null) }
     Box(
         Modifier
             .fillMaxSize()
             .background(Background)
             // Con la ventana de clave abierta, Atrás la cierra ella (va antes en la cadena de teclas).
-            .onBackKey(enabled = ready?.editor == null) { onBack() },
+            .onBackKey(enabled = ready?.editor == null && relayEditing == null) { onBack() },
     ) {
         when (val s = state) {
             SettingsUiState.Loading -> Unit
@@ -116,6 +119,10 @@ fun SettingsScreen(
                     onExternalPlayer = viewModel::setUseExternalPlayer,
                     onAutoFrameRate = viewModel::setAutoFrameRate,
                     onDebrid = viewModel::setDebrid,
+                    relayEditing = relayEditing,
+                    onRelayEdit = { relayEditing = it },
+                    onRelayAllDebrid = viewModel::setEnableRelayAllDebrid,
+                    onRelayRealDebrid = viewModel::setEnableRelayRealDebrid,
                     onOpenSetup = onOpenSetup,
                     onLanguage = { language -> viewModel.setLanguage(language) { restartApp(context) } },
                     providers = providers,
@@ -134,6 +141,20 @@ fun SettingsScreen(
                         onClose = viewModel::closeEditor,
                     )
                 }
+                // Ventana del relay: se pinta sobre la lista, nunca dentro de un item (no taparía la pantalla).
+                // El PIN no se rellena nunca: un secreto guardado no se vuelve a poner en pantalla ni en el estado guardado.
+                relayEditing?.let { field ->
+                    RelayEditorDialog(
+                        field = field,
+                        initial = if (field == RelayField.URL) s.relayUrl.orEmpty() else "",
+                        hasCurrentPin = !s.relayPin.isNullOrBlank(),
+                        onSave = { value ->
+                            if (field == RelayField.URL) viewModel.setRelayUrl(value) else viewModel.setRelayPin(value)
+                            relayEditing = null
+                        },
+                        onClose = { relayEditing = null },
+                    )
+                }
             }
         }
     }
@@ -149,6 +170,10 @@ private fun SettingsList(
     onExternalPlayer: (Boolean) -> Unit,
     onAutoFrameRate: (Boolean) -> Unit,
     onDebrid: (DebridService) -> Unit,
+    onRelayEdit: (RelayField?) -> Unit,
+    onRelayAllDebrid: (Boolean) -> Unit,
+    onRelayRealDebrid: (Boolean) -> Unit,
+    relayEditing: RelayField?,
     onOpenSetup: () -> Unit,
     onLanguage: (AppLanguage) -> Unit,
     providers: Set<SourceProvider>,
@@ -161,12 +186,28 @@ private fun SettingsList(
 ) {
     val requesters = remember { ApiService.entries.associateWith { FocusRequester() } }
     val debridRequester = remember { FocusRequester() }
+    val relayUrlRequester = remember { FocusRequester() }
+    val relayPinRequester = remember { FocusRequester() }
     // El foco vuelve a la tarjeta del servicio que se estaba editando (al entrar: el selector de debrid).
     var lastEdited by rememberSaveable { mutableStateOf<ApiService?>(null) }
+    // Última fila del relay editada, para devolverle el foco al cerrar su ventana.
+    var lastRelayField by rememberSaveable { mutableStateOf<RelayField?>(null) }
     LaunchedEffect(state.editor == null) {
         if (state.editor == null) {
             withFrameNanos { }
             runCatching { (lastEdited?.let { requesters.getValue(it) } ?: debridRequester).requestFocus() }
+        }
+    }
+    LaunchedEffect(relayEditing) {
+        val field = lastRelayField
+        if (relayEditing == null && field != null) {
+            withFrameNanos { }
+            runCatching {
+                when (field) {
+                    RelayField.URL -> relayUrlRequester
+                    RelayField.PIN -> relayPinRequester
+                }.requestFocus()
+            }
         }
     }
     val debridUi = state.services.first { it.service == state.debrid.apiService }
@@ -217,6 +258,23 @@ private fun SettingsList(
                     style = MaterialTheme.typography.bodyMedium,
                     color = Muted,
                     modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+                )
+            }
+            item { SectionTitle(tr("Debrid Relay", "Debrid Relay")) }
+            item {
+                RelaySettingsCard(
+                    url = state.relayUrl,
+                    pin = state.relayPin,
+                    allDebrid = state.enableRelayAllDebrid,
+                    realDebrid = state.enableRelayRealDebrid,
+                    onEdit = { field ->
+                        lastRelayField = field
+                        onRelayEdit(field)
+                    },
+                    onAllDebrid = onRelayAllDebrid,
+                    onRealDebrid = onRelayRealDebrid,
+                    urlModifier = Modifier.focusRequester(relayUrlRequester),
+                    pinModifier = Modifier.focusRequester(relayPinRequester),
                 )
             }
             item { SectionTitle(tr("Otros servicios", "Other services")) }
@@ -1023,6 +1081,332 @@ private fun AboutCard(
                 pinError = null
             }
         )
+    }
+}
+
+/**
+ * Debrid Relay: manda las peticiones de AllDebrid y Real-Debrid a un relay propio (VPS) con un PIN de 6 cifras,
+ * para que la IP del relay sea la que ven los servicios. Cada fila es enfocable: OK edita, ◀ ▶ activan o
+ * desactivan los interruptores. Las ventanas de edición las pinta la pantalla, no esta tarjeta.
+ */
+@Composable
+private fun RelaySettingsCard(
+    url: String?,
+    pin: String?,
+    allDebrid: Boolean,
+    realDebrid: Boolean,
+    onEdit: (RelayField) -> Unit,
+    onAllDebrid: (Boolean) -> Unit,
+    onRealDebrid: (Boolean) -> Unit,
+    urlModifier: Modifier = Modifier,
+    pinModifier: Modifier = Modifier,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        FocusCard(modifier = urlModifier, onClick = { onEdit(RelayField.URL) }) { focused ->
+            RelayRow(
+                title = tr("URL del relay", "Relay URL"),
+                value = url?.takeIf { it.isNotBlank() } ?: tr("No configurada", "Not set"),
+                valueColor = if (url.isNullOrBlank()) Amber else Color.White.copy(alpha = 0.8f),
+                hint = tr("OK para cambiar ›", "OK to change ›"),
+                focused = focused,
+            )
+        }
+        FocusCard(modifier = pinModifier, onClick = { onEdit(RelayField.PIN) }) { focused ->
+            RelayRow(
+                title = tr("PIN del relay", "Relay PIN"),
+                value = pin?.takeIf { it.isNotBlank() }?.let { "●".repeat(6) } ?: tr("No configurado", "Not set"),
+                valueColor = if (pin.isNullOrBlank()) Amber else Color.White.copy(alpha = 0.8f),
+                hint = tr("OK para cambiar ›", "OK to change ›"),
+                focused = focused,
+            )
+        }
+        RelayToggleRow(
+            title = tr("AllDebrid por el relay", "AllDebrid through the relay"),
+            subtitle = tr(
+                "Las peticiones a AllDebrid salen desde la IP del relay (necesita URL y PIN).",
+                "AllDebrid requests go out from the relay's IP (needs URL and PIN).",
+            ),
+            enabled = allDebrid,
+            onToggle = onAllDebrid,
+        )
+        RelayToggleRow(
+            title = tr("Real-Debrid por el relay", "Real-Debrid through the relay"),
+            subtitle = tr(
+                "Las peticiones a Real-Debrid salen desde la IP del relay (necesita URL y PIN).",
+                "Real-Debrid requests go out from the relay's IP (needs URL and PIN).",
+            ),
+            enabled = realDebrid,
+            onToggle = onRealDebrid,
+        )
+        Text(
+            if (allDebrid || realDebrid) {
+                if (url.isNullOrBlank() || pin.isNullOrBlank()) {
+                    tr(
+                        "Relay activado pero sin URL o PIN: el debrid fallará hasta que lo configures.",
+                        "Relay enabled without URL or PIN: debrid will fail until you set them.",
+                    )
+                } else {
+                    tr(
+                        "Relay activo. Si falla, la app usará la conexión directa al desactivarlo.",
+                        "Relay active. If it fails, turn it off to go back to a direct connection.",
+                    )
+                }
+            } else {
+                tr(
+                    "Desactivado: AllDebrid y Real-Debrid se conectan directamente desde la Shield.",
+                    "Off: AllDebrid and Real-Debrid connect directly from the Shield.",
+                )
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = if ((allDebrid || realDebrid) && (url.isNullOrBlank() || pin.isNullOrBlank())) Amber else Muted,
+            modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+        )
+    }
+}
+
+private enum class RelayField { URL, PIN }
+
+@Composable
+private fun RelayRow(title: String, value: String, valueColor: Color, hint: String, focused: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                color = Color.White,
+            )
+            Text(
+                value,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 16.sp,
+                color = valueColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        Spacer(Modifier.width(16.dp))
+        Text(
+            hint,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (focused) Color.White else Color.Transparent,
+        )
+    }
+}
+
+/** Interruptor de una tarjeta: OK lo cambia y ◀ ▶ también (como el resto de ajustes). */
+@Composable
+private fun RelayToggleRow(title: String, subtitle: String, enabled: Boolean, onToggle: (Boolean) -> Unit) {
+    FocusCard(
+        onClick = { onToggle(!enabled) },
+        modifier = Modifier.onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when (event.key) {
+                Key.DirectionLeft -> { onToggle(true); true }
+                Key.DirectionRight -> { onToggle(false); true }
+                else -> false
+            }
+        },
+    ) { _ ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                )
+                Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = Muted)
+            }
+            Spacer(Modifier.width(16.dp))
+            RelaySwitch(checked = enabled)
+        }
+    }
+}
+
+/** Interruptor dibujado a mano: Material no tiene Switch con el tamaño que pide la tele. */
+@Composable
+private fun RelaySwitch(checked: Boolean) {
+    Box(
+        contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart,
+        modifier = Modifier
+            .width(64.dp)
+            .height(32.dp)
+            .background(
+                if (checked) Green.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.14f),
+                RoundedCornerShape(50),
+            )
+            .padding(3.dp),
+    ) {
+        Box(Modifier.size(26.dp).background(Color.White, CircleShape))
+    }
+}
+
+/** Ventana para escribir la URL del relay o el PIN. Valida antes de guardar. */
+@Composable
+private fun RelayEditorDialog(
+    field: RelayField,
+    initial: String,
+    hasCurrentPin: Boolean = false,
+    onSave: (String) -> Unit,
+    onClose: () -> Unit,
+) {
+    // La URL no es un secreto: se conserva al recomponer. El PIN sí lo es, así que no se guarda en el estado guardado.
+    var input by rememberSaveable(field) { mutableStateOf(if (field == RelayField.PIN) "" else initial) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val fieldRequester = remember { FocusRequester() }
+    val saveRequester = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    var fieldFocused by remember { mutableStateOf(false) }
+    LaunchedEffect(field) {
+        withFrameNanos { }
+        runCatching { fieldRequester.requestFocus() }
+    }
+    val isPin = field == RelayField.PIN
+
+    fun submit() {
+        val clean = input.trim()
+        // Misma validación que aplicará el interceptor: si aquí no hay host, en reproducción tampoco.
+        val host = if (isPin) null else runCatching { java.net.URI(clean).host }.getOrNull()
+        val problem = when {
+            clean.isEmpty() && !isPin -> tr(
+                "Escribe la URL del relay (http:// o https://)",
+                "Type the relay URL (http:// or https://)",
+            )
+            clean.isEmpty() -> tr("Escribe el PIN de 6 cifras", "Type the 6-digit PIN")
+            isPin && (clean.length != 6 || clean.any { !it.isDigit() }) ->
+                tr("El PIN debe tener 6 cifras", "The PIN must have 6 digits")
+            !isPin && !(clean.startsWith("http://") || clean.startsWith("https://")) ->
+                tr("La URL debe empezar por http:// o https://", "The URL must start with http:// or https://")
+            !isPin && host.isNullOrBlank() ->
+                tr("La URL no es válida (revisa el dominio)", "The URL isn't valid (check the domain)")
+            else -> null
+        }
+        if (problem != null) {
+            error = problem
+            return
+        }
+        // Se guarda sin barras finales: las rutas se montan como "<url>/alldebrid" y "<url>/stream".
+        onSave(if (isPin) clean else clean.trimEnd('/'))
+    }
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.75f))
+            .onBackKey(enabled = true) { onClose() },
+    ) {
+        Column(
+            Modifier
+                .width(720.dp)
+                .background(Color(0xFF1B1D29), RoundedCornerShape(20.dp))
+                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(20.dp))
+                .padding(36.dp),
+        ) {
+            Text(
+                if (isPin) tr("PIN del Debrid Relay", "Debrid Relay PIN") else tr("URL del Debrid Relay", "Debrid Relay URL"),
+                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                color = Color.White,
+            )
+            Text(
+                if (isPin) {
+                    if (hasCurrentPin) {
+                        tr(
+                            "6 cifras que el relay espera en la cabecera X-Relay-Token. Ya hay un PIN guardado: el nuevo lo sustituye.",
+                            "6 digits the relay expects in the X-Relay-Token header. A PIN is already saved: the new one replaces it.",
+                        )
+                    } else {
+                        tr("6 cifras que el relay espera en la cabecera X-Relay-Token.", "6 digits the relay expects in the X-Relay-Token header.")
+                    }
+                } else {
+                    tr(
+                        "Dirección del relay, p. ej. https://relay.midominio.com. Las peticiones van a /alldebrid y /realdebrid.",
+                        "Relay address, e.g. https://relay.mydomain.com. Requests go to /alldebrid and /realdebrid.",
+                    )
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = Muted,
+            )
+            Spacer(Modifier.height(20.dp))
+            BasicTextField(
+                value = input,
+                onValueChange = {
+                    val next = it.replace("\n", "")
+                    input = if (isPin) next.filter { c -> c.isDigit() }.take(6) else next
+                    error = null
+                },
+                singleLine = true,
+                textStyle = TextStyle(color = Color.White, fontSize = 20.sp, fontFamily = FontFamily.Monospace),
+                cursorBrush = SolidColor(Color.White),
+                keyboardOptions = KeyboardOptions(
+                    autoCorrectEnabled = false,
+                    keyboardType = if (isPin) KeyboardType.NumberPassword else KeyboardType.Uri,
+                    imeAction = ImeAction.Done,
+                ),
+                keyboardActions = KeyboardActions(onDone = {
+                    keyboard?.hide()
+                    submit()
+                }),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(fieldRequester)
+                    .onFocusChanged { fieldFocused = it.isFocused }
+                    .onPreviewKeyEvent { event ->
+                        when (event.key) {
+                            Key.DirectionCenter, Key.Enter -> {
+                                if (event.type == KeyEventType.KeyUp) keyboard?.show()
+                                true
+                            }
+                            Key.DirectionDown -> {
+                                if (event.type == KeyEventType.KeyDown) runCatching { saveRequester.requestFocus() }
+                                true
+                            }
+                            else -> false
+                        }
+                    },
+                decorationBox = { inner ->
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF101119), RoundedCornerShape(10.dp))
+                            .border(
+                                width = if (fieldFocused) 2.dp else 1.dp,
+                                color = if (fieldFocused) Color.White else Color.White.copy(alpha = 0.2f),
+                                shape = RoundedCornerShape(10.dp),
+                            )
+                            .padding(horizontal = 18.dp, vertical = 16.dp),
+                    ) {
+                        if (input.isEmpty()) {
+                            Text(
+                                if (isPin) tr("6 cifras", "6 digits") else "https://",
+                                fontSize = 18.sp,
+                                color = Color.White.copy(alpha = 0.35f),
+                            )
+                        }
+                        inner()
+                    }
+                },
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                error ?: if (isPin) {
+                    tr("Solo cifras, ${input.length}/6", "Digits only, ${input.length}/6")
+                } else {
+                    tr("Debe empezar por http:// o https://", "Must start with http:// or https://")
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (error != null) Red else Muted,
+            )
+            Spacer(Modifier.height(24.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                TvButton(
+                    text = tr("Guardar", "Save"),
+                    onClick = { submit() },
+                    modifier = Modifier.focusRequester(saveRequester),
+                )
+                TvButton(text = tr("Cancelar", "Cancel"), onClick = onClose)
+            }
+        }
     }
 }
 
