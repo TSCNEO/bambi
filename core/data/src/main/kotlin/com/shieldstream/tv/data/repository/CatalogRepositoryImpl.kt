@@ -626,7 +626,14 @@ class CatalogRepositoryImpl @Inject constructor(
             ?: error(tr("Falta la clave de ${debrid.title}. Añádela en Ajustes (rueda arriba a la derecha).", "${debrid.title} key missing. Add it in Settings (gear, top right)."))
         val config = listOfNotNull(language, torrentioConfig(debrid, key)).joinToString("|")
         val streams = if (p == SourceProvider.TORRENTIO) torrentio.streamsWithConfig(config, type, streamId).streams
-        else torrentio.streamsAt("$base/$config/stream/$type/$streamId.json").streams
+        else {
+            val res = torrentio.streamsAt("$base/$config/stream/$type/$streamId.json").streams
+            if (res.isEmpty() && language != null) {
+                // Fallback sin filtro de idioma si el tracker no tenía la etiqueta es-ES
+                val fallbackConfig = torrentioConfig(debrid, key)
+                torrentio.streamsAt("$base/$fallbackConfig/stream/$type/$streamId.json").streams
+            } else res
+        }
         val sources = streams.mapNotNull { it.toDebridSource(item, debrid) }
         if (sources.isEmpty()) {
             streams.firstOrNull { it.isDebridError() }?.let { error(debridErrorMessage(it.title, debrid.title)) }
@@ -634,14 +641,14 @@ class CatalogRepositoryImpl @Inject constructor(
         return sources
     }
 
-    /** Fuente de Torrentio con debrid: hash y fileIdx salen del enlace /resolve/; "[TB+]" = está en la caché. */
+    /** Fuente de Torrentio o Peerflix con debrid: hash y fileIdx salen del enlace; "[TB+]" o "[AD+]" = está en la caché. */
     private fun TorrentioStreamDto.toDebridSource(item: CatalogItem, debrid: DebridService): StreamSource? {
-        val link = url?.takeIf { it.contains("/resolve/") } ?: return null
+        val link = url?.takeIf { it.startsWith("http") } ?: return null
         val (hash, idx) = parseResolveUrl(link) ?: return null
         return copy(infoHash = hash, fileIdx = fileIdx ?: idx).toStreamSource(item)?.copy(
             resolveUrl = link,
             debrid = debrid.title,
-            isCached = name.startsWith("[${debrid.shortName}+]"),
+            isCached = name.startsWith("[${debrid.shortName}+]") || name.contains("⚡") || name.contains("+]"),
         )
     }
 

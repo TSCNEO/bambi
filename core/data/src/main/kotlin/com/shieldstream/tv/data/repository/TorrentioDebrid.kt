@@ -42,16 +42,15 @@ internal fun debridErrorMessage(title: String, service: String): String = when {
 
 private val HASH = Regex("^[0-9a-fA-F]{40}$")
 
-/** infoHash y fileIdx dentro de …/resolve/{servicio}/{clave}/{hash}/{info}/{fileIdx}/{archivo}. */
+/** infoHash y fileIdx dentro de …/resolve/{servicio}/{clave}/{hash}/{info}/{fileIdx}/{archivo},
+ *  o de …/{servicio}/{clave}/{hash}/{titulo}/{fileIdx}/{archivo} en Peerflix (addon.peerflix.mov, sin /resolve/). */
 internal fun parseResolveUrl(url: String): Pair<String, Int?>? {
     val segments = Uri.parse(url).pathSegments
-    val start = segments.indexOf("resolve").takeIf { it >= 0 } ?: return null
-    // Lo normal: el hash va justo después de la clave. Si no, el primer segmento con forma de hash tras ella.
-    val hash = segments.getOrNull(start + 3)?.takeIf { HASH.matches(it) }
-        ?: segments.drop(start + 3).firstOrNull { HASH.matches(it) }
-        ?: return null
-    val fileIdx = segments.getOrNull(start + 5)?.toIntOrNull()
-    return hash.lowercase() to fileIdx
+    val hashIndex = segments.indexOfFirst { HASH.matches(it) }.takeIf { it >= 0 } ?: return null
+    val hash = segments[hashIndex].lowercase()
+    val fileIdx = segments.getOrNull(hashIndex + 2)?.toIntOrNull()
+        ?: segments.getOrNull(hashIndex + 1)?.toIntOrNull()
+    return hash to fileIdx
 }
 
 /**
@@ -107,17 +106,21 @@ class TorrentioLinkResolverImpl @Inject constructor(base: OkHttpClient) : Torren
             // Torrentio: la primera redirección fuera de Torrentio ya es el enlace del debrid.
             // Otros addons (AIOStreams → MediaFusion/Comet → debrid…): se sigue la cadena entera hasta una respuesta
             // 2xx y se le da al reproductor esa URL final (pasando por los addons intermedios daba 404).
-            if (isTorrentio(url) && !isTorrentio(next)) return@withContext DebridLink.Ready(next)
+            if (isResolverHost(url) && !isResolverHost(next)) return@withContext DebridLink.Ready(next)
             current = next
         }
         DebridLink.Problem(tr("Demasiadas redirecciones al pedir el enlace a $service.", "Too many redirects while requesting the $service link."), notCached = false)
     }
 
-    private fun isTorrentio(url: String) = Uri.parse(url).host?.contains("torrentio") == true
+    /** Host de un addon que resuelve debrid redirigiendo: Torrentio o Peerflix (addon.peerflix.mov). */
+    private fun isResolverHost(url: String): Boolean {
+        val host = Uri.parse(url).host?.lowercase() ?: return false
+        return host.contains("torrentio") || host.contains("peerflix")
+    }
 
     /** Vídeos de aviso de Torrentio (addon/moch/static.js) → mensaje en español. */
     private fun staticVideoProblem(url: String, service: String): DebridLink.Problem? {
-        if (!isTorrentio(url) || !url.contains("/videos/")) return null
+        if (!isResolverHost(url) || !url.contains("/videos/")) return null
         val file = url.substringAfterLast('/')
         return when {
             file.startsWith("downloading") -> DebridLink.Problem(
