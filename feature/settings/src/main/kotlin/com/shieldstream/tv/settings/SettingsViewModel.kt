@@ -61,6 +61,7 @@ sealed interface SettingsUiState {
         val relayPin: String?,
         val enableRelayAllDebrid: Boolean,
         val enableRelayRealDebrid: Boolean,
+        val isRelayVip: Boolean = false,
         val editor: KeyEditor?,
         /** Idioma con el que arrancó la app (cambiarlo la reinicia). */
         val language: AppLanguage = Lang.current,
@@ -107,11 +108,12 @@ class SettingsViewModel @Inject constructor(
             settings.relayPin,
             settings.enableRelayAllDebrid,
             settings.enableRelayRealDebrid,
-        ) { url, pin, ad, rd ->
-            RelaySettings(url, pin, ad, rd)
+            settings.isRelayVip,
+        ) { url, pin, ad, rd, isVip ->
+            RelaySettings(url, pin, ad, rd, isVip)
         },
     ) { (buffer, thumbnails, debrid), (forceSoftware, useExternal, afr), relay ->
-        SettingsPlayback(buffer, thumbnails, debrid, forceSoftware, useExternal, afr, relay.url, relay.pin, relay.ad, relay.rd)
+        SettingsPlayback(buffer, thumbnails, debrid, forceSoftware, useExternal, afr, relay.url, relay.pin, relay.ad, relay.rd, relay.isVip)
     }
 
 data class RelaySettings(
@@ -119,6 +121,7 @@ data class RelaySettings(
     val pin: String?,
     val ad: Boolean,
     val rd: Boolean,
+    val isVip: Boolean,
 )
 
 data class SettingsPlayback(
@@ -132,6 +135,7 @@ data class SettingsPlayback(
     val relayPin: String?,
     val enableRelayAllDebrid: Boolean,
     val enableRelayRealDebrid: Boolean,
+    val isRelayVip: Boolean,
 )
 
     val uiState: StateFlow<SettingsUiState> = combine(
@@ -159,6 +163,7 @@ data class SettingsPlayback(
             relayPin = play.relayPin,
             enableRelayAllDebrid = play.enableRelayAllDebrid,
             enableRelayRealDebrid = play.enableRelayRealDebrid,
+            isRelayVip = play.isRelayVip,
             editor = edit,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState.Loading)

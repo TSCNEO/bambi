@@ -267,6 +267,7 @@ private fun SettingsList(
                     pin = state.relayPin,
                     allDebrid = state.enableRelayAllDebrid,
                     realDebrid = state.enableRelayRealDebrid,
+                    isVip = state.isRelayVip,
                     onEdit = { field ->
                         lastRelayField = field
                         onRelayEdit(field)
@@ -1095,6 +1096,7 @@ private fun RelaySettingsCard(
     pin: String?,
     allDebrid: Boolean,
     realDebrid: Boolean,
+    isVip: Boolean = false,
     onEdit: (RelayField) -> Unit,
     onAllDebrid: (Boolean) -> Unit,
     onRealDebrid: (Boolean) -> Unit,
@@ -1102,6 +1104,31 @@ private fun RelaySettingsCard(
     pinModifier: Modifier = Modifier,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (isVip) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF261E10), RoundedCornerShape(12.dp))
+                    .border(1.dp, Color(0xFFFFD479).copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            ) {
+                Text("👑", fontSize = 20.sp)
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(
+                        tr("Servidor VIP Conectado", "VIP Server Connected"),
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = Color(0xFFFFD479),
+                    )
+                    Text(
+                        tr("Tu cuenta Debrid y Catálogo se configuran automáticamente desde tu servidor.", "Your Debrid and Catalog account are automatically configured from your server."),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.75f),
+                    )
+                }
+            }
+        }
         FocusCard(modifier = urlModifier, onClick = { onEdit(RelayField.URL) }) { focused ->
             RelayRow(
                 title = tr("URL del relay", "Relay URL"),

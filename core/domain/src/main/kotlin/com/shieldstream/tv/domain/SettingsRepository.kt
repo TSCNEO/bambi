@@ -83,4 +83,7 @@ interface SettingsRepository {
 
     val enableRelayRealDebrid: Flow<Boolean>
     suspend fun setEnableRelayRealDebrid(enabled: Boolean)
+
+    val isRelayVip: Flow<Boolean>
+    suspend fun setIsRelayVip(vip: Boolean)
 }

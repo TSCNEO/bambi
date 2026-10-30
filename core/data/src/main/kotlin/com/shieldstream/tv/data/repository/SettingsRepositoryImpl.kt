@@ -142,6 +142,13 @@ class SettingsRepositoryImpl @Inject constructor(
         enableRelayRdFlow.value = enabled
     }
 
+    private val isRelayVipFlow = MutableStateFlow(tokenStore.getSecret("relay_is_vip")?.toBoolean() ?: false)
+    override val isRelayVip: Flow<Boolean> = isRelayVipFlow
+    override suspend fun setIsRelayVip(vip: Boolean) {
+        tokenStore.setSecret("relay_is_vip", if (vip) "true" else null)
+        isRelayVipFlow.value = vip
+    }
+
     override val language: AppLanguage get() = Lang.current
 
     /** commit() (no apply): la app se reinicia justo después y el valor tiene que estar ya en disco. */

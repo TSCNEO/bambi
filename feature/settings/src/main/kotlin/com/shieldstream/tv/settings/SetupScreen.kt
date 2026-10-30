@@ -102,11 +102,20 @@ fun SetupScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    var showServerDialog by rememberSaveable { mutableStateOf(false) }
+
     Box(
         Modifier
             .fillMaxSize()
             .background(Background)
-            .onBackKey(enabled = true) { if (!viewModel.back()) onExit() },
+            .onBackKey(enabled = true) {
+                if (showServerDialog) {
+                    showServerDialog = false
+                    viewModel.clearError()
+                } else if (!viewModel.back()) {
+                    onExit()
+                }
+            },
     ) {
         val s = state as? SetupUiState.Ready ?: return@Box
         Column(Modifier.fillMaxSize().padding(horizontal = 56.dp, vertical = 24.dp)) {
@@ -115,6 +124,7 @@ fun SetupScreen(
             when (s.step) {
                 SetupStep.WELCOME -> WelcomeStep(
                     onStart = viewModel::next,
+                    onServer = { showServerDialog = true },
                     onLater = onExit,
                     onLanguage = {
                         val other = if (Lang.isEnglish) AppLanguage.ES else AppLanguage.EN
@@ -167,6 +177,30 @@ fun SetupScreen(
                 )
                 SetupStep.DONE -> DoneStep(state = s, onFinish = onFinish)
             }
+        }
+        if (showServerDialog && s.step == SetupStep.WELCOME) {
+            ServerConnectDialog(
+                checking = s.checking,
+                error = s.error,
+                onConnect = { url, pin ->
+                    viewModel.connectRelay(
+                        urlInput = url,
+                        pinInput = pin,
+                        onVipSuccess = {
+                            showServerDialog = false
+                            onFinish()
+                        },
+                        onStandardSuccess = {
+                            showServerDialog = false
+                            viewModel.next()
+                        },
+                    )
+                },
+                onClose = {
+                    showServerDialog = false
+                    viewModel.clearError()
+                },
+            )
         }
     }
 }
@@ -233,7 +267,12 @@ private fun SetupHeader(step: SetupStep) {
 // ------------------------------------------------------------------ bienvenida
 
 @Composable
-private fun ColumnScope.WelcomeStep(onStart: () -> Unit, onLater: () -> Unit, onLanguage: () -> Unit) {
+private fun ColumnScope.WelcomeStep(
+    onStart: () -> Unit,
+    onServer: () -> Unit,
+    onLater: () -> Unit,
+    onLanguage: () -> Unit,
+) {
     val startRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         withFrameNanos { }
@@ -262,6 +301,7 @@ private fun ColumnScope.WelcomeStep(onStart: () -> Unit, onLater: () -> Unit, on
         Spacer(Modifier.height(28.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             TvButton(text = tr("Empezar", "Start"), onClick = onStart, modifier = Modifier.focusRequester(startRequester))
+            TvButton(text = tr("Tengo un Servidor", "I have a Server"), onClick = onServer)
             TvButton(text = tr("Más tarde", "Later"), onClick = onLater)
             // Siempre en el otro idioma, para que lo entienda quien no lee el actual.
             TvButton(text = if (Lang.isEnglish) "Español" else "English", onClick = onLanguage)
@@ -652,5 +692,180 @@ private fun SummaryRow(label: String, ok: Boolean, required: Boolean) {
         Text(mark, color = color, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.width(24.dp))
         Text(label, style = MaterialTheme.typography.titleMedium, color = Color.White, modifier = Modifier.weight(1f))
         Text(note, style = MaterialTheme.typography.bodyMedium, color = color)
+    }
+}
+
+// ------------------------------------------------------------------ diálogo servidor
+
+@Composable
+private fun ServerConnectDialog(
+    checking: Boolean,
+    error: String?,
+    onConnect: (url: String, pin: String) -> Unit,
+    onClose: () -> Unit,
+) {
+    var urlInput by rememberSaveable { mutableStateOf("https://") }
+    var pinInput by rememberSaveable { mutableStateOf("") }
+    val urlRequester = remember { FocusRequester() }
+    val pinRequester = remember { FocusRequester() }
+    val connectRequester = remember { FocusRequester() }
+    val cancelRequester = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        runCatching { urlRequester.requestFocus() }
+    }
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.8f))
+            .onBackKey(enabled = true) { onClose() },
+    ) {
+        Column(
+            Modifier
+                .width(540.dp)
+                .background(Color(0xFF161922), RoundedCornerShape(16.dp))
+                .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(16.dp))
+                .padding(28.dp),
+        ) {
+            Text(
+                tr("Conectar a Servidor Privado", "Connect to Private Server"),
+                fontFamily = DisplayFont,
+                fontSize = 24.sp,
+                color = Color.White,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                tr(
+                    "Introduce la dirección de tu servidor y tu PIN de 6 cifras. Si tu cuenta es VIP, Bambi se configurará solo.",
+                    "Enter your server URL and 6-digit PIN. If your account is VIP, Bambi will auto-configure.",
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+                color = Muted,
+            )
+            Spacer(Modifier.height(20.dp))
+
+            Text(tr("URL del Servidor", "Server URL"), style = MaterialTheme.typography.labelMedium, color = Muted)
+            Spacer(Modifier.height(6.dp))
+            var urlFocused by remember { mutableStateOf(false) }
+            BasicTextField(
+                value = urlInput,
+                onValueChange = { urlInput = it.replace("\n", "") },
+                singleLine = true,
+                textStyle = TextStyle(color = Color.White, fontSize = 16.sp, fontFamily = FontFamily.Monospace),
+                cursorBrush = SolidColor(Color.White),
+                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
+                keyboardActions = KeyboardActions(onNext = { pinRequester.requestFocus() }),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(urlRequester)
+                    .onFocusChanged { urlFocused = it.isFocused }
+                    .onPreviewKeyEvent { event ->
+                        when (event.key) {
+                            Key.DirectionCenter, Key.Enter -> {
+                                if (event.type == KeyEventType.KeyUp) keyboard?.show()
+                                true
+                            }
+                            Key.DirectionDown -> {
+                                if (event.type == KeyEventType.KeyDown) runCatching { pinRequester.requestFocus() }
+                                true
+                            }
+                            else -> false
+                        }
+                    },
+                decorationBox = { inner ->
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF0D0F15), RoundedCornerShape(10.dp))
+                            .border(1.dp, if (urlFocused) Accent else Color.White.copy(alpha = 0.1f), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                    ) {
+                        inner()
+                    }
+                },
+            )
+
+            Spacer(Modifier.height(16.dp))
+            Text(tr("PIN (6 cifras)", "PIN (6 digits)"), style = MaterialTheme.typography.labelMedium, color = Muted)
+            Spacer(Modifier.height(6.dp))
+            var pinFocused by remember { mutableStateOf(false) }
+            BasicTextField(
+                value = pinInput,
+                onValueChange = { pinInput = it.filter { c -> c.isDigit() }.take(6) },
+                singleLine = true,
+                textStyle = TextStyle(color = Color.White, fontSize = 20.sp, fontFamily = FontFamily.Monospace, letterSpacing = 4.sp),
+                cursorBrush = SolidColor(Color.White),
+                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = {
+                    keyboard?.hide()
+                    connectRequester.requestFocus()
+                }),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(pinRequester)
+                    .onFocusChanged { pinFocused = it.isFocused }
+                    .onPreviewKeyEvent { event ->
+                        when (event.key) {
+                            Key.DirectionCenter, Key.Enter -> {
+                                if (event.type == KeyEventType.KeyUp) keyboard?.show()
+                                true
+                            }
+                            Key.DirectionDown -> {
+                                if (event.type == KeyEventType.KeyDown) runCatching { connectRequester.requestFocus() }
+                                true
+                            }
+                            Key.DirectionUp -> {
+                                if (event.type == KeyEventType.KeyDown) runCatching { urlRequester.requestFocus() }
+                                true
+                            }
+                            else -> false
+                        }
+                    },
+                decorationBox = { inner ->
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF0D0F15), RoundedCornerShape(10.dp))
+                            .border(1.dp, if (pinFocused) Accent else Color.White.copy(alpha = 0.1f), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                    ) {
+                        if (pinInput.isEmpty()) {
+                            Text("123456", color = Color.White.copy(alpha = 0.25f), fontSize = 20.sp, fontFamily = FontFamily.Monospace, letterSpacing = 4.sp)
+                        }
+                        inner()
+                    }
+                },
+            )
+
+            if (error != null) {
+                Spacer(Modifier.height(12.dp))
+                Text(error, style = MaterialTheme.typography.bodySmall, color = Red)
+            }
+
+            Spacer(Modifier.height(24.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                TvButton(
+                    text = if (checking) tr("Conectando...", "Connecting...") else tr("Conectar", "Connect"),
+                    onClick = {
+                        keyboard?.hide()
+                        if (!checking) onConnect(urlInput, pinInput)
+                    },
+                    enabled = !checking,
+                    modifier = Modifier.focusRequester(connectRequester),
+                )
+                TvButton(
+                    text = tr("Cancelar", "Cancel"),
+                    onClick = {
+                        keyboard?.hide()
+                        onClose()
+                    },
+                    modifier = Modifier.focusRequester(cancelRequester),
+                )
+            }
+        }
     }
 }

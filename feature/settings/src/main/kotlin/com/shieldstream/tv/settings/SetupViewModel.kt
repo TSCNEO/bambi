@@ -10,6 +10,7 @@ import com.shieldstream.tv.domain.DebridService
 import com.shieldstream.tv.domain.KeyCheck
 import com.shieldstream.tv.domain.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -17,6 +18,15 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.io.IOException
 import javax.inject.Inject
 
 /** Pasos de la guía de configuración inicial. */
@@ -54,6 +64,8 @@ sealed interface SetupUiState {
 class SetupViewModel @Inject constructor(
     private val apiKeys: ApiKeysRepository,
     private val settings: SettingsRepository,
+    private val okHttpClient: OkHttpClient,
+    private val json: Json,
 ) : ViewModel() {
 
     private val step = MutableStateFlow(SetupStep.WELCOME)
@@ -125,6 +137,115 @@ class SetupViewModel @Inject constructor(
 
     fun clearError() {
         error.value = null
+    }
+
+    fun connectRelay(
+        urlInput: String,
+        pinInput: String,
+        onVipSuccess: () -> Unit,
+        onStandardSuccess: () -> Unit,
+    ) {
+        val url = urlInput.trim().trimEnd('/')
+        val pin = pinInput.trim()
+        if (url.isEmpty()) {
+            error.value = tr("Escribe la URL del servidor", "Type the server URL")
+            return
+        }
+        if (!(url.startsWith("http://") || url.startsWith("https://"))) {
+            error.value = tr("La URL debe empezar por http:// o https://", "The URL must start with http:// or https://")
+            return
+        }
+        if (pin.length != 6 || pin.any { !it.isDigit() }) {
+            error.value = tr("El PIN debe tener 6 cifras", "The PIN must have 6 digits")
+            return
+        }
+        if (checking.value) return
+        checking.value = true
+        error.value = null
+
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val request = Request.Builder()
+                    .url("$url/api/v1/client/config")
+                    .header("X-Relay-Token", pin)
+                    .build()
+
+                okHttpClient.newCall(request).execute().use { response ->
+                    when (response.code) {
+                        200 -> {
+                            val body = response.body?.string().orEmpty()
+                            val jsonElement = json.parseToJsonElement(body).jsonObject
+                            val isVip = jsonElement["is_vip"]?.jsonPrimitive?.booleanOrNull == true
+                            if (isVip) {
+                                val debridServiceStr = jsonElement["debrid_service"]?.jsonPrimitive?.contentOrNull ?: "alldebrid"
+                                val debridApiKey = jsonElement["debrid_api_key"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                                val tmdbApiKey = jsonElement["tmdb_api_key"]?.jsonPrimitive?.contentOrNull.orEmpty()
+
+                                val debridService = DebridService.entries.firstOrNull {
+                                    it.name.equals(debridServiceStr, ignoreCase = true) ||
+                                    it.torrentioKey.equals(debridServiceStr, ignoreCase = true) ||
+                                    it.shortName.equals(debridServiceStr, ignoreCase = true)
+                                } ?: DebridService.ALLDEBRID
+
+                                val isAllDebrid = debridService == DebridService.ALLDEBRID || debridService.torrentioKey.equals("alldebrid", ignoreCase = true)
+
+                                settings.setRelayUrl(url)
+                                settings.setRelayPin(pin)
+                                settings.setIsRelayVip(true)
+                                settings.setDebridService(debridService)
+                                settings.setEnableRelayAllDebrid(isAllDebrid)
+                                settings.setEnableRelayRealDebrid(!isAllDebrid)
+                                if (tmdbApiKey.isNotBlank()) {
+                                    apiKeys.set(ApiService.TMDB, tmdbApiKey)
+                                }
+                                if (debridApiKey.isNotBlank()) {
+                                    apiKeys.set(debridService.apiService, debridApiKey)
+                                }
+
+                                withContext(Dispatchers.Main) {
+                                    checking.value = false
+                                    onVipSuccess()
+                                }
+                            } else {
+                                settings.setRelayUrl(url)
+                                settings.setRelayPin(pin)
+                                settings.setIsRelayVip(false)
+                                withContext(Dispatchers.Main) {
+                                    checking.value = false
+                                    onStandardSuccess()
+                                }
+                            }
+                        }
+                        401, 403 -> {
+                            withContext(Dispatchers.Main) {
+                                checking.value = false
+                                error.value = tr("PIN no válido o expirado", "Invalid or expired PIN")
+                            }
+                        }
+                        429 -> {
+                            withContext(Dispatchers.Main) {
+                                checking.value = false
+                                error.value = tr("Demasiados intentos. IP bloqueada temporalmente.", "Too many requests. IP temporarily blocked.")
+                            }
+                        }
+                        else -> {
+                            withContext(Dispatchers.Main) {
+                                checking.value = false
+                                error.value = tr("El servidor respondió con error ${response.code}", "Server responded with error ${response.code}")
+                            }
+                        }
+                    }
+                }
+            }.getOrElse { e ->
+                withContext(Dispatchers.Main) {
+                    checking.value = false
+                    error.value = when {
+                        e is IOException -> tr("No se pudo conectar con el servidor. Revisa la red y la URL.", "Could not connect to server. Check network and URL.")
+                        else -> e.message ?: tr("Error de conexión", "Connection error")
+                    }
+                }
+            }
+        }
     }
 }
 
