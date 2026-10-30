@@ -73,20 +73,19 @@ jobs:
           fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-      - name: Build Release APKs (Stable and Beta)
+      - name: Build Release APK
         env:
           KEYSTORE_PATH: /tmp/release.keystore
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          ./gradlew --no-daemon assembleStableRelease assembleBetaRelease
+          ./gradlew --no-daemon assembleStableRelease
 
-      - name: Prepare APK Assets
+      - name: Prepare APK Asset
         run: |
           mkdir -p dist
           cp app/build/outputs/apk/stable/release/app-stable-release.apk dist/Bambi.apk
-          cp app/build/outputs/apk/beta/release/app-beta-release.apk dist/Bambi-Beta.apk
 
       - name: Create GitHub Release
         env:
@@ -97,7 +96,7 @@ jobs:
           gh release delete "$TAG" --yes --repo "${{ github.repository }}" || true
           git tag -f "$TAG" || true
           git push origin "$TAG" --force || true
-          gh release create "$TAG" dist/Bambi.apk dist/Bambi-Beta.apk \
+          gh release create "$TAG" dist/Bambi.apk \
             --repo "${{ github.repository }}" \
             --title "Bambi $TAG" \
-            --notes "Release de Bambi con soporte de fuentes directas y variantes estables y beta."
+            --notes "Release de Bambi con soporte de fuentes directas y actualización automática."
