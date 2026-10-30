@@ -730,7 +730,7 @@ private fun ServerConnectDialog(
     onConnect: (url: String, pin: String) -> Unit,
     onClose: () -> Unit,
 ) {
-    var urlInput by rememberSaveable { mutableStateOf("https://") }
+    var urlInput by rememberSaveable { mutableStateOf("") }
     var pinInput by rememberSaveable { mutableStateOf("") }
     val urlRequester = remember { FocusRequester() }
     val pinRequester = remember { FocusRequester() }
@@ -848,18 +848,21 @@ private fun ServerConnectDialog(
                                     .border(1.dp, if (urlFocused) Accent else Color.White.copy(alpha = 0.1f), RoundedCornerShape(10.dp))
                                     .padding(horizontal = 14.dp, vertical = 12.dp),
                             ) {
+                                if (urlInput.isEmpty()) {
+                                    Text("mi-servidor.com", color = Color.White.copy(alpha = 0.25f), fontSize = 16.sp, fontFamily = FontFamily.Monospace)
+                                }
                                 inner()
                             }
                         },
                     )
 
                     Spacer(Modifier.height(14.dp))
-                    Text(tr("PIN (6 cifras)", "PIN (6 digits)"), style = MaterialTheme.typography.labelMedium, color = Muted)
+                    Text(tr("PIN", "PIN"), style = MaterialTheme.typography.labelMedium, color = Muted)
                     Spacer(Modifier.height(6.dp))
                     var pinFocused by remember { mutableStateOf(false) }
                     BasicTextField(
                         value = pinInput,
-                        onValueChange = { pinInput = it.filter { c -> c.isDigit() }.take(6) },
+                        onValueChange = { pinInput = it.filter { c -> c.isDigit() } },
                         singleLine = true,
                         textStyle = TextStyle(color = Color.White, fontSize = 20.sp, fontFamily = FontFamily.Monospace, letterSpacing = 4.sp),
                         cursorBrush = SolidColor(Color.White),
@@ -899,7 +902,7 @@ private fun ServerConnectDialog(
                                     .padding(horizontal = 14.dp, vertical = 12.dp),
                             ) {
                                 if (pinInput.isEmpty()) {
-                                    Text("••••••", color = Color.White.copy(alpha = 0.25f), fontSize = 20.sp, fontFamily = FontFamily.Monospace, letterSpacing = 4.sp)
+                                    Text("PIN", color = Color.White.copy(alpha = 0.25f), fontSize = 20.sp, fontFamily = FontFamily.Monospace, letterSpacing = 2.sp)
                                 }
                                 inner()
                             }

@@ -27,6 +27,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import java.io.IOException
 import javax.inject.Inject
 
@@ -206,18 +207,14 @@ class SetupViewModel @Inject constructor(
         onVipSuccess: () -> Unit,
         onStandardSuccess: () -> Unit,
     ) {
-        val url = urlInput.trim().trimEnd('/')
+        val rawUrl = urlInput.trim().trimEnd('/')
         val pin = pinInput.trim()
-        if (url.isEmpty()) {
+        if (rawUrl.isEmpty()) {
             error.value = tr("Escribe la URL del servidor", "Type the server URL")
             return
         }
-        if (!(url.startsWith("http://") || url.startsWith("https://"))) {
-            error.value = tr("La URL debe empezar por http:// o https://", "The URL must start with http:// or https://")
-            return
-        }
-        if (pin.length != 6 || pin.any { !it.isDigit() }) {
-            error.value = tr("El PIN debe tener 6 cifras", "The PIN must have 6 digits")
+        if (pin.isEmpty()) {
+            error.value = tr("Escribe el PIN", "Type the PIN")
             return
         }
         if (checking.value) return
@@ -225,90 +222,115 @@ class SetupViewModel @Inject constructor(
         error.value = null
 
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
-                val request = Request.Builder()
-                    .url("$url/api/v1/client/config")
-                    .header("X-Relay-Token", pin)
-                    .build()
+            val candidates = if (rawUrl.startsWith("http://", ignoreCase = true) || rawUrl.startsWith("https://", ignoreCase = true)) {
+                listOf(rawUrl)
+            } else {
+                listOf("https://$rawUrl", "http://$rawUrl")
+            }
 
-                okHttpClient.newCall(request).execute().use { response ->
-                    when (response.code) {
-                        200 -> {
-                            val body = response.body?.string().orEmpty()
-                            val jsonElement = json.parseToJsonElement(body).jsonObject
-                            val isVip = jsonElement["is_vip"]?.jsonPrimitive?.booleanOrNull == true
-                            if (isVip) {
-                                val debridServiceStr = jsonElement["debrid_service"]?.jsonPrimitive?.contentOrNull ?: "alldebrid"
-                                val debridApiKey = jsonElement["debrid_api_key"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                                val tmdbApiKey = jsonElement["tmdb_api_key"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            var lastError: Throwable? = null
+            var successfulResponse: Pair<String, Response>? = null
 
-                                val debridService = DebridService.entries.firstOrNull {
-                                    it.name.equals(debridServiceStr, ignoreCase = true) ||
-                                    it.torrentioKey.equals(debridServiceStr, ignoreCase = true) ||
-                                    it.shortName.equals(debridServiceStr, ignoreCase = true)
-                                } ?: DebridService.ALLDEBRID
+            for (candidate in candidates) {
+                try {
+                    val request = Request.Builder()
+                        .url("$candidate/api/v1/client/config")
+                        .header("X-Relay-Token", pin)
+                        .build()
+                    val response = okHttpClient.newCall(request).execute()
+                    successfulResponse = candidate to response
+                    break
+                } catch (e: Exception) {
+                    lastError = e
+                    // Si falla https y hay alternativa (http), prueba la siguiente
+                }
+            }
 
-                                val isAllDebrid = debridService == DebridService.ALLDEBRID || debridService.torrentioKey.equals("alldebrid", ignoreCase = true)
+            if (successfulResponse == null) {
+                withContext(Dispatchers.Main) {
+                    checking.value = false
+                    val e = lastError
+                    error.value = when {
+                        e is IOException -> tr(
+                            "No se pudo conectar con el servidor. Revisa la red y la URL.",
+                            "Could not connect to server. Check network and URL.",
+                        )
+                        else -> e?.message ?: tr("Error de conexión", "Connection error")
+                    }
+                }
+                return@launch
+            }
 
-                                settings.setRelayUrl(url)
-                                settings.setRelayPin(pin)
-                                settings.setIsRelayVip(true)
-                                settings.setDebridService(debridService)
-                                settings.setEnableRelayAllDebrid(isAllDebrid)
-                                settings.setEnableRelayRealDebrid(!isAllDebrid)
-                                if (tmdbApiKey.isNotBlank()) {
-                                    apiKeys.set(ApiService.TMDB, tmdbApiKey)
-                                }
-                                if (debridApiKey.isNotBlank()) {
-                                    apiKeys.set(debridService.apiService, debridApiKey)
-                                }
+            val (url, response) = successfulResponse
+            response.use { resp ->
+                when (resp.code) {
+                    200 -> {
+                        val body = resp.body?.string().orEmpty()
+                        val jsonElement = json.parseToJsonElement(body).jsonObject
+                        val isVip = jsonElement["is_vip"]?.jsonPrimitive?.booleanOrNull == true
+                        if (isVip) {
+                            val debridServiceStr = jsonElement["debrid_service"]?.jsonPrimitive?.contentOrNull ?: "alldebrid"
+                            val debridApiKey = jsonElement["debrid_api_key"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                            val tmdbApiKey = jsonElement["tmdb_api_key"]?.jsonPrimitive?.contentOrNull.orEmpty()
 
-                                // Catálogo privado: si el servidor manda un PIN Moria, se vincula solo.
-                                val moriaPin = jsonElement["moria_pin"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-                                if (moriaPin.isNotBlank()) {
-                                    runCatching { customCatalog.pairWithPin(moriaPin) }
-                                }
+                            val debridService = DebridService.entries.firstOrNull {
+                                it.name.equals(debridServiceStr, ignoreCase = true) ||
+                                it.torrentioKey.equals(debridServiceStr, ignoreCase = true) ||
+                                it.shortName.equals(debridServiceStr, ignoreCase = true)
+                            } ?: DebridService.ALLDEBRID
 
-                                withContext(Dispatchers.Main) {
-                                    checking.value = false
-                                    onVipSuccess()
-                                }
-                            } else {
-                                settings.setRelayUrl(url)
-                                settings.setRelayPin(pin)
-                                settings.setIsRelayVip(false)
-                                withContext(Dispatchers.Main) {
-                                    checking.value = false
-                                    onStandardSuccess()
-                                }
+                            val isAllDebrid = debridService == DebridService.ALLDEBRID || debridService.torrentioKey.equals("alldebrid", ignoreCase = true)
+
+                            settings.setRelayUrl(url)
+                            settings.setRelayPin(pin)
+                            settings.setIsRelayVip(true)
+                            settings.setDebridService(debridService)
+                            settings.setEnableRelayAllDebrid(isAllDebrid)
+                            settings.setEnableRelayRealDebrid(!isAllDebrid)
+                            if (tmdbApiKey.isNotBlank()) {
+                                apiKeys.set(ApiService.TMDB, tmdbApiKey)
                             }
-                        }
-                        401, 403 -> {
+                            if (debridApiKey.isNotBlank()) {
+                                apiKeys.set(debridService.apiService, debridApiKey)
+                            }
+
+                            // Catálogo privado: si el servidor manda un PIN Moria, se vincula solo.
+                            val moriaPin = jsonElement["moria_pin"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                            if (moriaPin.isNotBlank()) {
+                                runCatching { customCatalog.pairWithPin(moriaPin) }
+                            }
+
                             withContext(Dispatchers.Main) {
                                 checking.value = false
-                                error.value = tr("PIN no válido o expirado", "Invalid or expired PIN")
+                                onVipSuccess()
                             }
-                        }
-                        429 -> {
+                        } else {
+                            settings.setRelayUrl(url)
+                            settings.setRelayPin(pin)
+                            settings.setIsRelayVip(false)
                             withContext(Dispatchers.Main) {
                                 checking.value = false
-                                error.value = tr("Demasiados intentos. IP bloqueada temporalmente.", "Too many requests. IP temporarily blocked.")
-                            }
-                        }
-                        else -> {
-                            withContext(Dispatchers.Main) {
-                                checking.value = false
-                                error.value = tr("El servidor respondió con error ${response.code}", "Server responded with error ${response.code}")
+                                onStandardSuccess()
                             }
                         }
                     }
-                }
-            }.getOrElse { e ->
-                withContext(Dispatchers.Main) {
-                    checking.value = false
-                    error.value = when {
-                        e is IOException -> tr("No se pudo conectar con el servidor. Revisa la red y la URL.", "Could not connect to server. Check network and URL.")
-                        else -> e.message ?: tr("Error de conexión", "Connection error")
+                    401, 403 -> {
+                        withContext(Dispatchers.Main) {
+                            checking.value = false
+                            error.value = tr("PIN no válido o expirado", "Invalid or expired PIN")
+                        }
+                    }
+                    429 -> {
+                        withContext(Dispatchers.Main) {
+                            checking.value = false
+                            error.value = tr("Demasiados intentos. IP bloqueada temporalmente.", "Too many requests. IP temporarily blocked.")
+                        }
+                    }
+                    else -> {
+                        withContext(Dispatchers.Main) {
+                            checking.value = false
+                            error.value = tr("El servidor respondió con error ${resp.code}", "Server responded with error ${resp.code}")
+                        }
                     }
                 }
             }

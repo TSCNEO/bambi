@@ -1292,18 +1292,15 @@ private fun RelayEditorDialog(
 
     fun submit() {
         val clean = input.trim()
+        val normalized = if (isPin || clean.isEmpty()) clean else if (clean.startsWith("http://") || clean.startsWith("https://")) clean else "https://$clean"
         // Misma validación que aplicará el interceptor: si aquí no hay host, en reproducción tampoco.
-        val host = if (isPin) null else runCatching { java.net.URI(clean).host }.getOrNull()
+        val host = if (isPin) null else runCatching { java.net.URI(normalized).host }.getOrNull()
         val problem = when {
             clean.isEmpty() && !isPin -> tr(
-                "Escribe la URL del relay (http:// o https://)",
-                "Type the relay URL (http:// or https://)",
+                "Escribe la URL del relay",
+                "Type the relay URL",
             )
-            clean.isEmpty() -> tr("Escribe el PIN de 6 cifras", "Type the 6-digit PIN")
-            isPin && (clean.length != 6 || clean.any { !it.isDigit() }) ->
-                tr("El PIN debe tener 6 cifras", "The PIN must have 6 digits")
-            !isPin && !(clean.startsWith("http://") || clean.startsWith("https://")) ->
-                tr("La URL debe empezar por http:// o https://", "The URL must start with http:// or https://")
+            clean.isEmpty() -> tr("Escribe el PIN", "Type the PIN")
             !isPin && host.isNullOrBlank() ->
                 tr("La URL no es válida (revisa el dominio)", "The URL isn't valid (check the domain)")
             else -> null
@@ -1313,7 +1310,7 @@ private fun RelayEditorDialog(
             return
         }
         // Se guarda sin barras finales: las rutas se montan como "<url>/alldebrid" y "<url>/stream".
-        onSave(if (isPin) clean else clean.trimEnd('/'))
+        onSave(if (isPin) clean else normalized.trimEnd('/'))
     }
 
     Box(
@@ -1339,16 +1336,16 @@ private fun RelayEditorDialog(
                 if (isPin) {
                     if (hasCurrentPin) {
                         tr(
-                            "6 cifras que el relay espera en la cabecera X-Relay-Token. Ya hay un PIN guardado: el nuevo lo sustituye.",
-                            "6 digits the relay expects in the X-Relay-Token header. A PIN is already saved: the new one replaces it.",
+                            "PIN que el relay espera en la cabecera X-Relay-Token. Ya hay un PIN guardado: el nuevo lo sustituye.",
+                            "PIN the relay expects in the X-Relay-Token header. A PIN is already saved: the new one replaces it.",
                         )
                     } else {
-                        tr("6 cifras que el relay espera en la cabecera X-Relay-Token.", "6 digits the relay expects in the X-Relay-Token header.")
+                        tr("PIN que el relay espera en la cabecera X-Relay-Token.", "PIN the relay expects in the X-Relay-Token header.")
                     }
                 } else {
                     tr(
-                        "Dirección del relay, p. ej. https://relay.midominio.com. Las peticiones van a /alldebrid y /realdebrid.",
-                        "Relay address, e.g. https://relay.mydomain.com. Requests go to /alldebrid and /realdebrid.",
+                        "Dirección del relay, p. ej. relay.midominio.com. Las peticiones van a /alldebrid y /realdebrid.",
+                        "Relay address, e.g. relay.mydomain.com. Requests go to /alldebrid and /realdebrid.",
                     )
                 },
                 style = MaterialTheme.typography.bodyMedium,
@@ -1359,7 +1356,7 @@ private fun RelayEditorDialog(
                 value = input,
                 onValueChange = {
                     val next = it.replace("\n", "")
-                    input = if (isPin) next.filter { c -> c.isDigit() }.take(6) else next
+                    input = if (isPin) next.filter { c -> c.isDigit() } else next
                     error = null
                 },
                 singleLine = true,
@@ -1405,7 +1402,7 @@ private fun RelayEditorDialog(
                     ) {
                         if (input.isEmpty()) {
                             Text(
-                                if (isPin) tr("6 cifras", "6 digits") else "https://",
+                                if (isPin) tr("PIN", "PIN") else "mi-servidor.com",
                                 fontSize = 18.sp,
                                 color = Color.White.copy(alpha = 0.35f),
                             )
@@ -1417,9 +1414,9 @@ private fun RelayEditorDialog(
             Spacer(Modifier.height(12.dp))
             Text(
                 error ?: if (isPin) {
-                    tr("Solo cifras, ${input.length}/6", "Digits only, ${input.length}/6")
+                    tr("Solo cifras", "Digits only")
                 } else {
-                    tr("Debe empezar por http:// o https://", "Must start with http:// or https://")
+                    tr("Ej: mi-servidor.com", "e.g. my-server.com")
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (error != null) Red else Muted,

@@ -177,18 +177,18 @@ class LocalPairingServer(
     private fun handleSubmit(request: HttpRequest, output: OutputStream) {
         val credentials = parseCredentials(String(request.body, Charsets.UTF_8))
         if (credentials == null) {
-            respond(output, 400, "Bad Request", JSON_TYPE, errorJson(tr("Escribe la URL y el PIN de 6 cifras", "Enter the URL and the 6-digit PIN")))
+            respond(output, 400, "Bad Request", JSON_TYPE, errorJson(tr("Escribe la URL y el PIN", "Enter the URL and the PIN")))
             output.flush()
             return
         }
         val (url, pin) = credentials
-        if (!(url.startsWith("http://") || url.startsWith("https://"))) {
-            respond(output, 400, "Bad Request", JSON_TYPE, errorJson(tr("La URL debe empezar por http:// o https://", "The URL must start with http:// or https://")))
+        if (url.isBlank()) {
+            respond(output, 400, "Bad Request", JSON_TYPE, errorJson(tr("Escribe la URL del servidor", "Enter the server URL")))
             output.flush()
             return
         }
-        if (pin.length != 6) {
-            respond(output, 400, "Bad Request", JSON_TYPE, errorJson(tr("El PIN debe tener 6 cifras", "The PIN must have 6 digits")))
+        if (pin.isBlank()) {
+            respond(output, 400, "Bad Request", JSON_TYPE, errorJson(tr("Escribe el PIN", "Enter the PIN")))
             output.flush()
             return
         }
@@ -365,16 +365,16 @@ class LocalPairingServer(
 <main class="card">
   <div class="brand">BAMBI</div>
   <h1>Vincular con la TV</h1>
-  <p class="lead">Escribe la dirección de tu servidor y tu PIN de 6 cifras. La TV los recibe al instante, sin tocar el mando.</p>
+  <p class="lead">Escribe la dirección de tu servidor y tu PIN. La TV los recibe al instante, sin tocar el mando.</p>
 
   <form id="f" autocomplete="off" novalidate>
     <label for="url">URL del servidor</label>
-    <input id="url" name="url" type="text" inputmode="url" placeholder="https://mi-servidor.com"
+    <input id="url" name="url" type="text" inputmode="url" placeholder="mi-servidor.com"
            autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="next">
 
-    <label for="pin">PIN de 6 cifras</label>
-    <input id="pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6"
-           placeholder="000000" enterkeyhint="done">
+    <label for="pin">PIN</label>
+    <input id="pin" name="pin" type="password" inputmode="numeric" pattern="[0-9]*"
+           placeholder="PIN" enterkeyhint="done">
 
     <button id="btn" type="submit">Vincular con la TV</button>
     <p class="hint">Misma Wi-Fi que la TV. Esta página se apaga sola al enviar los datos.</p>
@@ -402,21 +402,19 @@ class LocalPairingServer(
 
   var pinInput = document.getElementById('pin');
 
-  // maxlength recorta antes que el saneado, así que los caracteres que no son cifras
-  // se frenan aquí: si no, un dedo torcido en el teclado se comería una cifra del PIN.
   pinInput.addEventListener('beforeinput', function (event) {
     if (!event.data || !/[^0-9]/.test(event.data)) return;
     event.preventDefault();
     var digits = event.data.replace(/[^0-9]/g, '');
     var start = pinInput.selectionStart === null ? pinInput.value.length : pinInput.selectionStart;
     var end = pinInput.selectionEnd === null ? start : pinInput.selectionEnd;
-    pinInput.value = (pinInput.value.slice(0, start) + digits + pinInput.value.slice(end)).slice(0, 6);
-    var caret = Math.min(start + digits.length, 6);
+    pinInput.value = pinInput.value.slice(0, start) + digits + pinInput.value.slice(end);
+    var caret = start + digits.length;
     pinInput.setSelectionRange(caret, caret);
   });
 
   pinInput.addEventListener('input', function () {
-    var clean = pinInput.value.replace(/[^0-9]/g, '').slice(0, 6);
+    var clean = pinInput.value.replace(/[^0-9]/g, '');
     if (clean !== pinInput.value) pinInput.value = clean;
   });
 
@@ -428,8 +426,7 @@ class LocalPairingServer(
     var pin = document.getElementById('pin').value.replace(/[^0-9]/g, '');
 
     if (!url) { showError('Escribe la URL del servidor.'); return; }
-    if (!/^https?:\/\//i.test(url)) { showError('La URL debe empezar por http:// o https://'); return; }
-    if (pin.length !== 6) { showError('El PIN debe tener 6 cifras.'); return; }
+    if (!pin) { showError('Escribe el PIN.'); return; }
 
     btn.disabled = true;
     btn.textContent = 'Enviando...';

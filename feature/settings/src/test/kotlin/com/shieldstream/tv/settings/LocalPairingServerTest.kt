@@ -116,7 +116,7 @@ class LocalPairingServerTest {
             assertTrue(response.body.contains("Vincular con la TV"))
             assertTrue(response.body.contains("type=\"text\""))
             assertTrue(response.body.contains("type=\"password\""))
-            assertTrue(response.body.contains("maxlength=\"6\""))
+            assertTrue(response.body.contains("name=\"pin\""))
             assertTrue(response.body.contains("/submit"))
             assertTrue(response.body.contains("Datos enviados a la TV"))
             assertTrue(response.body.contains("fetch('/submit'"))
@@ -183,7 +183,7 @@ class LocalPairingServerTest {
     }
 
     @Test
-    fun `un pin corto se rechaza sin avisar a la tv`() {
+    fun `un pin vacio se rechaza sin avisar a la tv`() {
         val called = AtomicReference(false)
         val latch = CountDownLatch(1)
         val url = AtomicReference<String>()
@@ -194,10 +194,38 @@ class LocalPairingServerTest {
         server.start()
         assertTrue(latch.await(5, TimeUnit.SECONDS))
         try {
-            val response = post(url.get(), "/submit", "application/json", """{"url":"https://a.com","pin":"12"}""")
+            val response = post(url.get(), "/submit", "application/json", """{"url":"https://a.com","pin":""}""")
             assertEquals(400, response.code)
             assertFalse(called.get())
             assertTrue(server.isRunning)
+        } finally {
+            server.stop()
+        }
+    }
+
+    @Test
+    fun `una url sin protocolo ni scheme se acepta y entrega`() {
+        val received = AtomicReference<Pair<String, String>>()
+        val done = CountDownLatch(1)
+        val latch = CountDownLatch(1)
+        val url = AtomicReference<String>()
+        val server = LocalPairingServer(
+            onCredentials = { u, p -> received.set(u to p); done.countDown() },
+            onReady = { url.set(it); latch.countDown() },
+        )
+        server.start()
+        assertTrue(latch.await(5, TimeUnit.SECONDS))
+        try {
+            val response = post(
+                url.get(),
+                "/submit",
+                "application/json",
+                """{"url":"relay.midominio.com","pin":"999"}""",
+            )
+            assertEquals(200, response.code)
+            assertTrue(response.body.contains("\"ok\":true"))
+            assertTrue(done.await(5, TimeUnit.SECONDS))
+            assertEquals("relay.midominio.com" to "999", received.get())
         } finally {
             server.stop()
         }
