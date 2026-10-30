@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.shieldstream.tv.domain.ApiKeysRepository
 import com.shieldstream.tv.domain.ApiService
+import com.shieldstream.tv.domain.CustomCatalogRepository
 import com.shieldstream.tv.domain.DebridService
 import com.shieldstream.tv.domain.KeyCheck
 import com.shieldstream.tv.domain.SettingsRepository
@@ -66,6 +67,7 @@ class SetupViewModel @Inject constructor(
     private val settings: SettingsRepository,
     private val okHttpClient: OkHttpClient,
     private val json: Json,
+    private val customCatalog: CustomCatalogRepository,
 ) : ViewModel() {
 
     private val step = MutableStateFlow(SetupStep.WELCOME)
@@ -139,6 +141,65 @@ class SetupViewModel @Inject constructor(
         error.value = null
     }
 
+    // ------------------------------------------------------------------ vincular desde el móvil
+
+    private var pairingServer: LocalPairingServer? = null
+
+    /** URL del formulario local que se enseña en el QR (null = servidor apagado). */
+    private val pairingUrl = MutableStateFlow<String?>(null)
+
+    val localPairingUrl: StateFlow<String?> = pairingUrl
+
+    /**
+     * Abre un servidor HTTP efímero en la TV para que el móvil (misma Wi-Fi) mande
+     * URL y PIN sin tocar el mando. Al recibirlos se conecta igual que a mano.
+     */
+    fun startLocalPairing(
+        onQrReady: (String) -> Unit,
+        onVipSuccess: () -> Unit,
+        onStandardSuccess: () -> Unit,
+    ) {
+        stopLocalPairing()
+        pairingUrl.value = null
+        val server = LocalPairingServer(
+            onCredentials = { url, pin ->
+                // Hilo de fondo del servidor: connectRelay se encarga de volver a Main.
+                connectRelay(
+                    urlInput = url,
+                    pinInput = pin,
+                    onVipSuccess = onVipSuccess,
+                    onStandardSuccess = onStandardSuccess,
+                )
+            },
+            onReady = { url ->
+                pairingUrl.value = url
+                withContextMain { onQrReady(url) }
+            },
+            onError = { message ->
+                pairingUrl.value = null
+                withContextMain { error.value = message }
+            },
+        )
+        pairingServer = server
+        server.start()
+    }
+
+    /** Cierra el servidor local si estaba abierto. */
+    fun stopLocalPairing() {
+        pairingServer?.stop()
+        pairingServer = null
+        // La última URL se queda para que el QR no parpadee mientras el móvil ya la está usando.
+    }
+
+    private fun withContextMain(block: () -> Unit) {
+        viewModelScope.launch(Dispatchers.Main) { block() }
+    }
+
+    override fun onCleared() {
+        stopLocalPairing()
+        super.onCleared()
+    }
+
     fun connectRelay(
         urlInput: String,
         pinInput: String,
@@ -200,6 +261,12 @@ class SetupViewModel @Inject constructor(
                                 }
                                 if (debridApiKey.isNotBlank()) {
                                     apiKeys.set(debridService.apiService, debridApiKey)
+                                }
+
+                                // Catálogo privado: si el servidor manda un PIN Moria, se vincula solo.
+                                val moriaPin = jsonElement["moria_pin"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                                if (moriaPin.isNotBlank()) {
+                                    runCatching { customCatalog.pairWithPin(moriaPin) }
                                 }
 
                                 withContext(Dispatchers.Main) {
