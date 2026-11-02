@@ -108,7 +108,8 @@ fun UpdatePrompt(viewModel: UpdateViewModel = hiltViewModel()) {
                 ) {
                     Buttons(
                         primary = tr("Abrir ajustes", "Open settings"),
-                        onPrimary = { viewModel.openInstallPermission(context) },
+                        // Si la tele no tiene ninguna de esas pantallas, se reintenta por si el permiso ya está dado.
+                        onPrimary = { if (!viewModel.openInstallPermission(context)) viewModel.update() },
                         secondary = tr("Ya está: actualizar", "Done: update"),
                         onSecondary = viewModel::update,
                     )
