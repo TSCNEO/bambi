@@ -43,7 +43,7 @@ class CustomCatalogRepositoryImpl @Inject constructor(
 ) : CustomCatalogRepository {
     private val client = base.newBuilder().build()
     private val dbFile: File get() = File(context.filesDir, "catalog.db")
-    private val versionJsonUrl = "https://gist.githubusercontent.com/raw/4870a0717ba7f27f5544bb872de6f5a7/version.json"
+    private val versionJsonUrl = "https://gist.githubusercontent.com/raw/c5a7549409cb6d5f3a5f6ad60fd66c62/version.json"
 
     companion object {
         private const val VAULT_SALT = "bambi_vault_salt_#984x"
