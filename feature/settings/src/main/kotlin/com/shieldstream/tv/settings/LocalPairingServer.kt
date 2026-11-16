@@ -42,7 +42,10 @@ class LocalPairingServer(
 ) {
 
     private var scope: CoroutineScope? = null
+    @Volatile
     private var serverSocket: ServerSocket? = null
+    @Volatile
+    private var stoppedLatch: java.util.concurrent.CountDownLatch? = null
 
     @Volatile
     private var running = false
@@ -57,21 +60,30 @@ class LocalPairingServer(
     fun start() {
         if (running) return
         running = true
+        val latch = java.util.concurrent.CountDownLatch(1)
+        stoppedLatch = latch
         val newScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = newScope
         newScope.launch {
             val ip = findLocalIpv4Address()
             if (ip == null) {
                 running = false
+                latch.countDown()
                 onError(tr("La TV no está conectada a ninguna red local", "The TV is not connected to a local network"))
                 return@launch
             }
             val server = runCatching { openServerSocket() }.getOrElse {
                 running = false
+                latch.countDown()
                 onError(tr("No se pudo abrir el servidor local", "Could not open the local server"))
                 return@launch
             }
             serverSocket = server
+            if (!running) {
+                runCatching { server.close() }
+                latch.countDown()
+                return@launch
+            }
             val localUrl = "http://$ip:${server.localPort}"
             url = localUrl
             onReady(localUrl)
@@ -88,6 +100,7 @@ class LocalPairingServer(
                 }
             } finally {
                 runCatching { server.close() }
+                latch.countDown()
             }
         }
     }
@@ -95,11 +108,14 @@ class LocalPairingServer(
     /** Cierra el puerto y cancela el hilo de escucha. Idempotente. */
     fun stop() {
         running = false
+        val latch = stoppedLatch
         runCatching { serverSocket?.close() }
         serverSocket = null
         url = null
         scope?.cancel()
         scope = null
+        runCatching { latch?.await(500, java.util.concurrent.TimeUnit.MILLISECONDS) }
+        stoppedLatch = null
     }
 
     // ------------------------------------------------------------------ red

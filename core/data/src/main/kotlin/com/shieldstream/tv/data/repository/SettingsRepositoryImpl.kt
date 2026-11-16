@@ -237,7 +237,7 @@ class SettingsRepositoryImpl @Inject constructor(
         autoFrameRateFlow.value = enabled
     }
 
-    private val relayUrlFlow = MutableStateFlow(tokenStore.getSecret("relay_url"))
+    private val relayUrlFlow = MutableStateFlow(runCatching { tokenStore.getSecret("relay_url") }.getOrNull())
     override val relayUrl: Flow<String?> = relayUrlFlow
     override suspend fun setRelayUrl(url: String?) {
         val clean = url?.trim()?.takeIf { it.isNotEmpty() }
@@ -245,7 +245,7 @@ class SettingsRepositoryImpl @Inject constructor(
         relayUrlFlow.value = clean
     }
 
-    private val relayPinFlow = MutableStateFlow(tokenStore.getSecret("relay_pin"))
+    private val relayPinFlow = MutableStateFlow(runCatching { tokenStore.getSecret("relay_pin") }.getOrNull())
     override val relayPin: Flow<String?> = relayPinFlow
     override suspend fun setRelayPin(pin: String?) {
         val clean = pin?.trim()?.takeIf { it.isNotEmpty() }
@@ -267,7 +267,7 @@ class SettingsRepositoryImpl @Inject constructor(
         enableRelayRdFlow.value = enabled
     }
 
-    private val isRelayVipFlow = MutableStateFlow(tokenStore.getSecret("relay_is_vip")?.toBoolean() ?: false)
+    private val isRelayVipFlow = MutableStateFlow(runCatching { tokenStore.getSecret("relay_is_vip") }.getOrNull()?.toBoolean() ?: false)
     override val isRelayVip: Flow<Boolean> = isRelayVipFlow
     override suspend fun setIsRelayVip(vip: Boolean) {
         tokenStore.setSecret("relay_is_vip", if (vip) "true" else null)
