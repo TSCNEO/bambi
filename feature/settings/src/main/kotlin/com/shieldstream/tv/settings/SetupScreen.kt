@@ -4,6 +4,7 @@ import androidx.compose.ui.platform.LocalContext
 import com.shieldstream.tv.ui.component.restartApp
 import com.shieldstream.tv.model.AppLanguage
 import com.shieldstream.tv.model.SubtitlePreference
+import com.shieldstream.tv.model.tr
 import com.shieldstream.tv.strings.localizedStringResource
 import com.shieldstream.tv.strings.keyNameResource
 import com.shieldstream.tv.strings.titleResource
