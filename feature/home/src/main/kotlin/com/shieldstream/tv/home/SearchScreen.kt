@@ -1,6 +1,7 @@
 package com.shieldstream.tv.home
 
-import com.shieldstream.tv.model.tr
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.localizedStringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.text.BasicTextField
@@ -67,13 +68,8 @@ import kotlinx.coroutines.delay
 private const val KEYS = "abcdefghijklmnopqrstuvwxyz1234567890"
 private const val KEY_COLUMNS = 6
 
-/** QWERTY (con Ñ, como un teclado español). Filas de distinta longitud: el D-pad va al más cercano. */
 private val QWERTY_ROWS = listOf("1234567890", "qwertyuiop", "asdfghjklñ", "zxcvbnm")
 
-/**
- * Búsqueda estilo Netflix TV: teclado propio en pantalla (evita el IME del sistema, que en TV
- * atrapa el foco del D-pad) + resultados en rejilla que se actualizan mientras escribes.
- */
 @Composable
 fun SearchScreen(
     onItemClick: (CatalogItem) -> Unit,
@@ -86,13 +82,10 @@ fun SearchScreen(
     val firstKey = remember { FocusRequester() }
     val layoutKey = remember { FocusRequester() }
     val cardRequester = remember { FocusRequester() }
-    // Última tarjeta enfocada: al volver de una ficha (Atrás), el foco vuelve a ella y no al teclado.
-    // rememberSaveable: sobrevive mientras la pantalla está debajo en la pila de navegación.
     var lastCardKey by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         withFrameNanos { }
         val backOnCard = lastCardKey != null && run {
-            // La rejilla puede tardar un fotograma en colocar la tarjeta: unos reintentos cortos.
             repeat(4) {
                 if (runCatching { cardRequester.requestFocus() }.isSuccess) return@run true
                 delay(60)
@@ -102,14 +95,10 @@ fun SearchScreen(
         if (!backOnCard) runCatching { firstKey.requestFocus() }
     }
 
-    // Teclado del sistema (incluye el dictado por voz del mando en muchas teles). Solo se puede enfocar el
-    // campo mientras está abierto: el teclado de Android en TV se queda con el D-pad y no deja salir.
     val keyboard = LocalSoftwareKeyboardController.current
     val fieldRequester = remember { FocusRequester() }
     var systemKeyboard by remember { mutableStateOf(false) }
     var field by remember { mutableStateOf(TextFieldValue(query, TextRange(query.length))) }
-    // Solo con el teclado de Android cerrado: mientras escribe, manda el campo (si no, un valor de query aún sin
-    // actualizar pisaría lo que se acaba de teclear y se comería letras).
     LaunchedEffect(query, systemKeyboard) {
         if (!systemKeyboard && field.text != query) field = TextFieldValue(query, TextRange(query.length))
     }
@@ -133,8 +122,6 @@ fun SearchScreen(
                 .fillMaxHeight()
                 .padding(start = 40.dp, top = 40.dp, end = 16.dp),
         ) {
-            // Campo de búsqueda: muestra el texto. Se escribe con el teclado de abajo o, con "Teclado del sistema",
-            // con el de Android (entonces es un campo de texto de verdad).
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -163,8 +150,6 @@ fun SearchScreen(
                             .fillMaxWidth()
                             .focusRequester(fieldRequester)
                             .focusProperties { canFocus = systemKeyboard }
-                            // Con el teclado de Android ya cerrado, el campo se quedaría con las flechas (mueven el
-                            // cursor): ▼ o Atrás salen del campo y vuelven al teclado de Bambi.
                             .onPreviewKeyEvent { event ->
                                 val exit = event.key == Key.DirectionDown || event.key == Key.Back || event.key == Key.Escape
                                 if (!exit) return@onPreviewKeyEvent false
@@ -175,7 +160,7 @@ fun SearchScreen(
                     )
                     if (query.isEmpty()) {
                         Text(
-                            text = tr("Buscar", "Search"),
+                            text = localizedStringResource(StringsR.string.home_search),
                             color = Color.White.copy(alpha = 0.45f),
                             style = MaterialTheme.typography.titleMedium,
                             maxLines = 1,
@@ -199,16 +184,16 @@ fun SearchScreen(
 
         Column(Modifier.weight(1f).fillMaxHeight().padding(top = 40.dp, end = 24.dp)) {
             val header = when (val s = state) {
-                SearchUiState.Loading -> tr("Buscando…", "Searching…")
-                is SearchUiState.Suggestions -> tr("Lo más visto hoy", "Most watched today")
-                is SearchUiState.Results -> tr("Resultados para «${s.query}»", "Results for “${s.query}”")
-                is SearchUiState.Empty -> tr("Sin resultados para «${s.query}»", "No results for “${s.query}”")
+                SearchUiState.Loading -> localizedStringResource(StringsR.string.home_searching)
+                is SearchUiState.Suggestions -> localizedStringResource(StringsR.string.home_most_watched_today)
+                is SearchUiState.Results -> localizedStringResource(StringsR.string.home_search_results_for, s.query)
+                is SearchUiState.Empty -> localizedStringResource(StringsR.string.home_no_results_for, s.query)
                 is SearchUiState.Error -> s.message
             }
             Text(
                 text = header,
                 color = Color.White,
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                 modifier = Modifier.padding(start = 12.dp, bottom = 8.dp),
             )
             val items = when (val s = state) {
@@ -248,7 +233,6 @@ private fun OnScreenKeyboard(
     onToggleLayout: () -> Unit,
     onSystemKeyboard: () -> Unit,
 ) {
-    // Al cambiar ABC ⇄ QWERTY el foco se queda en la tecla de cambiar (si no, se perdería al rehacer las filas).
     var toggled by remember { mutableStateOf(false) }
     LaunchedEffect(qwerty) {
         if (toggled) {
@@ -258,7 +242,6 @@ private fun OnScreenKeyboard(
     }
     val rows = if (qwerty) QWERTY_ROWS else KEYS.chunked(KEY_COLUMNS)
     val keyWidth = if (qwerty) 36.dp else 42.dp
-    // Ancho total de una fila completa (6 o 10 teclas): las filas de abajo se reparten ese ancho.
     val fullWidth = if (qwerty) 36.dp * 10 + 4.dp * 9 else 42.dp * 6 + 4.dp * 5
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         rows.forEachIndexed { rowIndex, rowKeys ->
@@ -273,13 +256,13 @@ private fun OnScreenKeyboard(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             KeyButton(width = fullWidth - 42.dp - 88.dp - 8.dp, onClick = { onChar(' ') }) {
-                Text(tr("Espacio", "Space"), style = MaterialTheme.typography.bodyMedium, color = it)
+                Text(localizedStringResource(StringsR.string.home_space), style = MaterialTheme.typography.bodyMedium, color = it)
             }
             KeyButton(width = 42.dp, onClick = onBackspace) {
-                Icon(AppIcons.Backspace, contentDescription = tr("Borrar", "Clear"), tint = it, modifier = Modifier.size(20.dp))
+                Icon(AppIcons.Backspace, contentDescription = localizedStringResource(StringsR.string.home_clear), tint = it, modifier = Modifier.size(20.dp))
             }
             KeyButton(width = 88.dp, onClick = onClear) {
-                Text(tr("Borrar", "Clear"), style = MaterialTheme.typography.bodyMedium, color = it)
+                Text(localizedStringResource(StringsR.string.home_clear), style = MaterialTheme.typography.bodyMedium, color = it)
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -294,7 +277,7 @@ private fun OnScreenKeyboard(
                 Text(if (qwerty) "ABC" else "QWERTY", style = MaterialTheme.typography.bodyMedium, color = it)
             }
             KeyButton(width = fullWidth - 88.dp - 4.dp, onClick = onSystemKeyboard) {
-                Text(tr("Teclado del sistema", "System keyboard"), style = MaterialTheme.typography.bodyMedium, color = it, maxLines = 1)
+                Text(localizedStringResource(StringsR.string.home_system_keyboard), style = MaterialTheme.typography.bodyMedium, color = it, maxLines = 1)
             }
         }
     }

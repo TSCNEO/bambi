@@ -1,5 +1,7 @@
 package com.shieldstream.tv.home
 
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.localizedStringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,15 +38,14 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.shieldstream.tv.model.CatalogItem
-import com.shieldstream.tv.model.tr
+import com.shieldstream.tv.ui.component.ActionMenuDialog
+import com.shieldstream.tv.ui.component.ActionMenuItem
+import com.shieldstream.tv.ui.component.AppIcons
+import com.shieldstream.tv.ui.component.LineIcons
 import com.shieldstream.tv.ui.component.PosterCard
 import com.shieldstream.tv.ui.component.tvClickable
 import kotlinx.coroutines.delay
 
-/**
- * Pestaña "Mi lista": rejilla con todo lo guardado (Todo / Series / Películas). OK abre la ficha; mantener OK lo
- * quita. Al volver de una ficha, el foco vuelve a la tarjeta de la que se salió.
- */
 @Composable
 fun MyListScreen(
     onItemClick: (CatalogItem) -> Unit,
@@ -53,7 +54,8 @@ fun MyListScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val cardRequester = remember { FocusRequester() }
     var lastCardKey by rememberSaveable { mutableStateOf<String?>(null) }
-    // Volver de la ficha: foco a la última tarjeta (si sigue en la lista).
+    var cardToRestore by remember { mutableStateOf<String?>(null) }
+    var menuItem by remember { mutableStateOf<CatalogItem?>(null) }
     LaunchedEffect(state is MyListUiState.Content) {
         if (state !is MyListUiState.Content || lastCardKey == null) return@LaunchedEffect
         withFrameNanos { }
@@ -62,11 +64,34 @@ fun MyListScreen(
             delay(60)
         }
     }
+    LaunchedEffect(cardToRestore) {
+        if (cardToRestore == null) return@LaunchedEffect
+        withFrameNanos { }
+        repeat(4) {
+            if (runCatching { cardRequester.requestFocus() }.isSuccess) {
+                cardToRestore = null
+                return@LaunchedEffect
+            }
+            delay(60)
+        }
+        cardToRestore = null
+    }
 
-    Column(Modifier.fillMaxSize().padding(start = 48.dp, end = 36.dp, top = 24.dp)) {
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(start = 48.dp, end = 36.dp, top = 24.dp)) {
+        val currentSort = when (val s = state) {
+            is MyListUiState.Content -> s.sort
+            is MyListUiState.Empty -> s.sort
+            MyListUiState.Loading -> MyListSort.RECENT
+        }
+        val hidingCompleted = when (val s = state) {
+            is MyListUiState.Content -> s.hideCompleted
+            is MyListUiState.Empty -> s.hideCompleted
+            MyListUiState.Loading -> false
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                tr("Mi lista", "My list"),
+                localizedStringResource(StringsR.string.home_my_list),
                 color = Color.White,
                 style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
             )
@@ -77,26 +102,45 @@ fun MyListScreen(
                 MyListUiState.Loading -> MyListFilter.ALL
             }
             listOf(
-                MyListFilter.ALL to tr("Todo", "All"),
-                MyListFilter.TV to tr("Series", "TV Shows"),
-                MyListFilter.MOVIES to tr("Películas", "Movies"),
+                MyListFilter.ALL to localizedStringResource(StringsR.string.home_all),
+                MyListFilter.TV to localizedStringResource(StringsR.string.home_tv_shows),
+                MyListFilter.MOVIES to localizedStringResource(StringsR.string.home_movies),
             ).forEach { (f, label) ->
                 FilterChip(label = label, selected = f == current, onClick = { viewModel.setFilter(f) })
                 Spacer(Modifier.width(8.dp))
             }
             Spacer(Modifier.weight(1f))
             if (state is MyListUiState.Content) {
-                Text(tr("Mantén OK para quitar", "Hold OK to remove"), color = Color.White.copy(alpha = 0.5f), style = MaterialTheme.typography.bodyMedium)
+                Text(localizedStringResource(StringsR.string.home_hold_ok_to_remove), color = Color.White.copy(alpha = 0.5f), style = MaterialTheme.typography.bodyMedium)
             }
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            listOf(
+                MyListSort.NEW_FIRST to localizedStringResource(StringsR.string.home_new_first),
+                MyListSort.RECENT to localizedStringResource(StringsR.string.home_recent),
+                MyListSort.TITLE to localizedStringResource(StringsR.string.home_a_z),
+            ).forEach { (value, label) ->
+                FilterChip(label = label, selected = value == currentSort, onClick = { viewModel.setSort(value) })
+                Spacer(Modifier.width(8.dp))
+            }
+            Spacer(Modifier.weight(1f))
+            FilterChip(
+                label = localizedStringResource(StringsR.string.home_hide_completed),
+                selected = hidingCompleted,
+                onClick = viewModel::toggleHideCompleted,
+            )
         }
         Spacer(Modifier.height(12.dp))
         when (val s = state) {
-            MyListUiState.Loading -> Text(tr("Cargando…", "Loading…"), color = Color.White.copy(alpha = 0.6f))
+            MyListUiState.Loading -> Text(localizedStringResource(StringsR.string.home_loading), color = Color.White.copy(alpha = 0.6f))
             is MyListUiState.Empty -> Text(
                 if (s.filter == MyListFilter.ALL) {
-                    tr("Tu lista está vacía. Añade películas y series con el botón «Mi lista» de su ficha.", "Your list is empty. Add movies and shows with the “My list” button on their page.")
+                    localizedStringResource(StringsR.string.home_your_list_is_empty_add_movies_and)
+                } else if (s.hideCompleted) {
+                    localizedStringResource(StringsR.string.home_no_unfinished_shows_match_these_filters)
                 } else {
-                    tr("No hay nada de este tipo en tu lista.", "Nothing of this kind in your list.")
+                    localizedStringResource(StringsR.string.home_nothing_of_this_kind_in_your_list)
                 },
                 color = Color.White.copy(alpha = 0.6f),
                 style = MaterialTheme.typography.titleMedium,
@@ -113,15 +157,54 @@ fun MyListScreen(
                         item = item,
                         onClick = { onItemClick(item) },
                         onFocused = { lastCardKey = item.key },
-                        onLongClick = { viewModel.remove(item) },
+                        onLongClick = { menuItem = item },
+                        newEpisodeCount = s.newEpisodeCounts[item.key] ?: 0,
                         width = 140.dp,
                         modifier = if (item.key == lastCardKey) Modifier.focusRequester(cardRequester) else Modifier,
                     )
                 }
             }
         }
+        }
+        menuItem?.let { item ->
+            MyListActions(
+                item = item,
+                onDetails = {
+                    menuItem = null
+                    onItemClick(item)
+                },
+                onRemove = {
+                    val neighbour = (state as? MyListUiState.Content)?.items?.let { items ->
+                        val index = items.indexOfFirst { it.key == item.key }
+                        if (index < 0) null else items.getOrNull(index + 1) ?: items.getOrNull(index - 1)
+                    }
+                    lastCardKey = neighbour?.key
+                    cardToRestore = neighbour?.key
+                    menuItem = null
+                    viewModel.remove(item)
+                },
+                onCancel = { menuItem = null },
+            )
+        }
     }
 }
+
+@Composable
+internal fun MyListActions(
+    item: CatalogItem,
+    onDetails: () -> Unit,
+    onRemove: () -> Unit,
+    onCancel: () -> Unit,
+) = ActionMenuDialog(
+    title = item.title,
+    onDismiss = onCancel,
+    consumeOpeningKeyRelease = true,
+    actions = listOf(
+        ActionMenuItem(localizedStringResource(StringsR.string.home_cancel), LineIcons.Close, onCancel),
+        ActionMenuItem(localizedStringResource(StringsR.string.home_view_details), AppIcons.List, onDetails),
+        ActionMenuItem(localizedStringResource(StringsR.string.home_remove), LineIcons.Delete, onRemove),
+    ),
+)
 
 @Composable
 private fun FilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
@@ -143,7 +226,7 @@ private fun FilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
         Text(
             label,
             color = if (focused) Color.Black else Color.White,
-            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
         )
     }
 }

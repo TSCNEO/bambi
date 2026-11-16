@@ -1,6 +1,7 @@
 package com.shieldstream.tv.ui.component
 
-import com.shieldstream.tv.model.tr
+import com.shieldstream.tv.strings.localizedStringResource
+import com.shieldstream.tv.strings.R as StringsR
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,11 +33,6 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.shieldstream.tv.model.CatalogItem
 
-/**
- * Héroe "full-bleed" con backdrop. El `LaunchedEffect(focused)` es el punto de
- * enganche para la preview auto-reproducible: se arranca al ganar foco y se
- * detiene al perderlo (o al salir de la pantalla).
- */
 @Composable
 fun Hero(
     item: CatalogItem,
@@ -47,8 +43,6 @@ fun Hero(
     var focused by remember { mutableStateOf(false) }
 
     LaunchedEffect(focused) {
-        // Preview de héroe: arrancar/detener reproducción según foco.
-        // Se conecta al PlayerController cuando el item disponga de tráiler/backdrop de video.
     }
 
     Box(
@@ -107,7 +101,7 @@ fun Hero(
                 .padding(24.dp)
                 .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier),
         ) {
-            Text(tr("Reproducir", "Play"))
+            Text(localizedStringResource(StringsR.string.common_play))
         }
     }
 }

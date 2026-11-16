@@ -5,8 +5,10 @@ import com.shieldstream.tv.network.api.AllDebridApi
 import com.shieldstream.tv.network.api.RealDebridApi
 import com.shieldstream.tv.network.api.TmdbApi
 import com.shieldstream.tv.network.api.TorrentioApi
+import com.shieldstream.tv.network.api.IthilApi
 import android.content.Context
 import android.content.pm.ApplicationInfo
+import android.util.Log
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -15,7 +17,6 @@ import dagger.hilt.components.SingletonComponent
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import java.util.concurrent.TimeUnit
@@ -27,8 +28,6 @@ object ApiConfig {
     const val ALL_DEBRID_BASE_URL = "https://api.alldebrid.com/"
     const val TORRENTIO_BASE_URL = "https://torrentio.strem.fun/"
     const val TMDB_BASE_URL = "https://api.themoviedb.org/"
-    // La clave de TMDB ya no va en el código: se guarda cifrada en el dispositivo y se cambia en Ajustes
-    // (la primera vez se rellena con tmdbApiKey de local.properties, que no se sube a git).
 }
 
 @Module
@@ -48,7 +47,6 @@ object NetworkModule {
         @ApplicationContext context: Context,
         @Named("debridRelay") debridRelayInterceptor: okhttp3.Interceptor? = null,
     ): OkHttpClient = OkHttpClient.Builder()
-        // Conexión corta: con una IP bloqueada (ver CloudflareFallbackDns) se pasa enseguida a la siguiente.
         .connectTimeout(5, TimeUnit.SECONDS)
         .dns(com.shieldstream.tv.network.CloudflareFallbackDns)
         .eventListener(com.shieldstream.tv.network.CloudflareFallbackDns.failureListener)
@@ -56,9 +54,13 @@ object NetworkModule {
         .writeTimeout(30, TimeUnit.SECONDS)
         .apply {
             if (debridRelayInterceptor != null) addInterceptor(debridRelayInterceptor)
-            // Registro de peticiones solo en "Bambi (pruebas)": en la release no se imprimen URLs con claves.
             val debuggable = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
-            if (debuggable) addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
+            if (debuggable) addInterceptor { chain ->
+                val request = chain.request()
+                val response = chain.proceed(request)
+                Log.d("Http", "${request.method} ${request.url.host} -> ${response.code}")
+                response
+            }
         }
         .build()
 
@@ -79,9 +81,12 @@ object NetworkModule {
 
     @Provides
     @Singleton
+    fun provideIthilApi(client: OkHttpClient, json: Json): IthilApi =
+        buildRetrofit("https://api.github.com/", client, json).create(IthilApi::class.java)
+
+    @Provides
+    @Singleton
     fun provideTmdbApi(client: OkHttpClient, json: Json): TmdbApi {
-        // Todo TMDB en el idioma de la app (títulos, sinopsis, géneros, episodios). Se lee en cada petición,
-        // pero solo cambia al reiniciar la app (ver Lang).
         val tmdbClient = client.newBuilder()
             .addInterceptor { chain ->
                 val request = chain.request()

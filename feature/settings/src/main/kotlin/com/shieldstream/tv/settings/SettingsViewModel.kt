@@ -1,16 +1,33 @@
 package com.shieldstream.tv.settings
 
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.Texts
+import com.shieldstream.tv.strings.sectionResource
 import com.shieldstream.tv.domain.SourceProvider
 import com.shieldstream.tv.model.Lang
 import com.shieldstream.tv.model.AppLanguage
-import com.shieldstream.tv.model.tr
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.shieldstream.tv.domain.ApiKeysRepository
 import com.shieldstream.tv.domain.ApiService
 import com.shieldstream.tv.domain.DebridService
+import com.shieldstream.tv.domain.EpisodeTrackingRepository
+import com.shieldstream.tv.domain.IthilDownloadScheduler
+import com.shieldstream.tv.domain.IthilUpdateRepository
+import com.shieldstream.tv.domain.IthilAccessRepository
+import com.shieldstream.tv.domain.IthilLibraryState
 import com.shieldstream.tv.domain.KeyCheck
 import com.shieldstream.tv.domain.SettingsRepository
+import com.shieldstream.tv.domain.StremioAddons
+import com.shieldstream.tv.media.PlaybackPolicyProvider
+import com.shieldstream.tv.model.AudioCodec
+import com.shieldstream.tv.model.DeviceCapabilities
+import com.shieldstream.tv.model.DeviceOptimization
+import com.shieldstream.tv.model.HdrType
+import com.shieldstream.tv.model.MemoryProfile
+import com.shieldstream.tv.model.Quality
+import com.shieldstream.tv.model.SourceExclusions
+import com.shieldstream.tv.model.SubtitleAppearance
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -22,7 +39,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-/** Estado de la clave de un servicio. */
 sealed interface ServiceStatus {
     data object Missing : ServiceStatus
     data object Checking : ServiceStatus
@@ -32,12 +48,10 @@ sealed interface ServiceStatus {
 
 data class ServiceUi(
     val service: ApiService,
-    /** Últimos 4 caracteres a la vista, el resto con puntos. null = sin clave. */
     val maskedKey: String?,
     val status: ServiceStatus,
 )
 
-/** Ventana para escribir una clave nueva. */
 data class KeyEditor(
     val service: ApiService,
     val hasKey: Boolean,
@@ -45,12 +59,19 @@ data class KeyEditor(
     val error: String? = null,
 )
 
+private data class PlaybackSettings(
+    val bufferSeconds: Int,
+    val seekThumbnails: Boolean,
+    val debrid: DebridService,
+    val optimization: DeviceOptimization,
+    val experimentalSubtitleSync: Boolean,
+)
+
 sealed interface SettingsUiState {
     data object Loading : SettingsUiState
     data class Ready(
         val services: List<ServiceUi>,
         val bufferSeconds: Int,
-        /** ◀▶ en el reproductor: miniaturas (true) o saltos de 10 s (false). */
         val seekThumbnails: Boolean,
         val forceSoftwareAudio: Boolean,
         val useExternalPlayer: Boolean,
@@ -62,8 +83,11 @@ sealed interface SettingsUiState {
         val enableRelayAllDebrid: Boolean,
         val enableRelayRealDebrid: Boolean,
         val isRelayVip: Boolean = false,
+        val optimization: DeviceOptimization,
+        val experimentalSubtitleSync: Boolean = true,
+        val capabilities: DeviceCapabilities,
+        val memoryProfile: MemoryProfile,
         val editor: KeyEditor?,
-        /** Idioma con el que arrancó la app (cambiarlo la reinicia). */
         val language: AppLanguage = Lang.current,
     ) : SettingsUiState
 }
@@ -72,13 +96,18 @@ sealed interface SettingsUiState {
 class SettingsViewModel @Inject constructor(
     private val apiKeys: ApiKeysRepository,
     private val settings: SettingsRepository,
+    private val playbackPolicies: PlaybackPolicyProvider,
+    private val episodeTracking: EpisodeTrackingRepository,
+    private val texts: Texts,
+    private val ithilUpdates: IthilUpdateRepository,
+    private val ithilScheduler: IthilDownloadScheduler,
+    private val ithilAccess: IthilAccessRepository,
     private val customCatalog: com.shieldstream.tv.domain.CustomCatalogRepository,
     private val appVersion: com.shieldstream.tv.domain.AppVersion,
 ) : ViewModel() {
 
     /** Versión base de grodri99/bambi sobre la que va este fork (vacío = no se muestra). */
     val upstreamVersion: String get() = appVersion.upstreamVersion
-
 
     val isCustomCatalogActivated: Boolean get() = customCatalog.isActivated()
     fun getCatalogVersion(): String? = customCatalog.getCatalogVersion()
@@ -87,15 +116,19 @@ class SettingsViewModel @Inject constructor(
 
     private val statuses = MutableStateFlow<Map<ApiService, ServiceStatus>>(emptyMap())
     private val editor = MutableStateFlow<KeyEditor?>(null)
+    private val ithilUnlockGesture = IthilUnlockGesture()
 
-    private val playback = combine(
-        combine(
-            settings.maxBufferSeconds,
-            settings.seekThumbnails,
-            settings.debridService,
-        ) { buffer, thumbnails, debrid ->
-            Triple(buffer, thumbnails, debrid)
-        },
+    private val upstreamPlayback = combine(
+        settings.maxBufferSeconds,
+        settings.seekThumbnails,
+        settings.debridService,
+        settings.deviceOptimization,
+        settings.experimentalSubtitleSync,
+    ) { buffer, thumbnails, debrid, optimization, experimentalSync ->
+        PlaybackSettings(buffer, thumbnails, debrid, optimization, experimentalSync)
+    }
+
+    private val forkPlayback = combine(
         combine(
             settings.forceSoftwareAudio,
             settings.useExternalPlayer,
@@ -112,64 +145,75 @@ class SettingsViewModel @Inject constructor(
         ) { url, pin, ad, rd, isVip ->
             RelaySettings(url, pin, ad, rd, isVip)
         },
-    ) { (buffer, thumbnails, debrid), (forceSoftware, useExternal, afr), relay ->
-        SettingsPlayback(buffer, thumbnails, debrid, forceSoftware, useExternal, afr, relay.url, relay.pin, relay.ad, relay.rd, relay.isVip)
+    ) { (forceSoftware, useExternal, afr), relay ->
+        ForkPlaybackSettings(forceSoftware, useExternal, afr, relay.url, relay.pin, relay.ad, relay.rd, relay.isVip)
     }
 
-data class RelaySettings(
-    val url: String?,
-    val pin: String?,
-    val ad: Boolean,
-    val rd: Boolean,
-    val isVip: Boolean,
-)
+    private val playback = combine(upstreamPlayback, forkPlayback) { up, fork -> up to fork }
 
-data class SettingsPlayback(
-    val bufferSeconds: Int,
-    val seekThumbnails: Boolean,
-    val debrid: DebridService,
-    val forceSoftwareAudio: Boolean,
-    val useExternalPlayer: Boolean,
-    val autoFrameRate: Boolean,
-    val relayUrl: String?,
-    val relayPin: String?,
-    val enableRelayAllDebrid: Boolean,
-    val enableRelayRealDebrid: Boolean,
-    val isRelayVip: Boolean,
-)
+    data class RelaySettings(
+        val url: String?,
+        val pin: String?,
+        val ad: Boolean,
+        val rd: Boolean,
+        val isVip: Boolean,
+    )
+
+    data class ForkPlaybackSettings(
+        val forceSoftwareAudio: Boolean,
+        val useExternalPlayer: Boolean,
+        val autoFrameRate: Boolean,
+        val relayUrl: String?,
+        val relayPin: String?,
+        val enableRelayAllDebrid: Boolean,
+        val enableRelayRealDebrid: Boolean,
+        val isRelayVip: Boolean,
+    )
 
     val uiState: StateFlow<SettingsUiState> = combine(
         apiKeys.keys,
         statuses,
         playback,
         editor,
-    ) { keys, status, play, edit ->
+    ) { keys, status, (playback, fork), edit ->
+        val policy = playbackPolicies.resolve(
+            playback.optimization,
+            playback.bufferSeconds,
+            playback.seekThumbnails,
+        )
         SettingsUiState.Ready(
             services = ApiService.entries.map { service ->
                 val key = keys[service]
                 ServiceUi(
                     service = service,
-                    maskedKey = key?.let(::mask),
+                    maskedKey = if (service == ApiService.AIOSTREAMS) {
+                        texts.get(StringsR.string.settings_addons_count, StremioAddons.parse(key.orEmpty()).size)
+                    } else {
+                        key?.let(::mask)
+                    },
                     status = if (key.isNullOrBlank()) ServiceStatus.Missing else status[service] ?: ServiceStatus.Checking,
                 )
             },
-            bufferSeconds = play.bufferSeconds,
-            seekThumbnails = play.seekThumbnails,
-            forceSoftwareAudio = play.forceSoftwareAudio,
-            useExternalPlayer = play.useExternalPlayer,
-            autoFrameRate = play.autoFrameRate,
-            debrid = play.debrid,
-            relayUrl = play.relayUrl,
-            relayPin = play.relayPin,
-            enableRelayAllDebrid = play.enableRelayAllDebrid,
-            enableRelayRealDebrid = play.enableRelayRealDebrid,
-            isRelayVip = play.isRelayVip,
+            bufferSeconds = policy.maxBufferSeconds,
+            seekThumbnails = policy.seekThumbnails,
+            forceSoftwareAudio = fork.forceSoftwareAudio,
+            useExternalPlayer = fork.useExternalPlayer,
+            autoFrameRate = fork.autoFrameRate,
+            debrid = playback.debrid,
+            relayUrl = fork.relayUrl,
+            relayPin = fork.relayPin,
+            enableRelayAllDebrid = fork.enableRelayAllDebrid,
+            enableRelayRealDebrid = fork.enableRelayRealDebrid,
+            isRelayVip = fork.isRelayVip,
+            optimization = playback.optimization,
+            experimentalSubtitleSync = playback.experimentalSubtitleSync,
+            capabilities = playbackPolicies.capabilities,
+            memoryProfile = policy.memoryProfile,
             editor = edit,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState.Loading)
 
     init {
-        // Al entrar se prueban todas las claves guardadas (en paralelo) para enseñar su estado real.
         apiKeys.keys.value.forEach { (service, key) ->
             if (!key.isNullOrBlank()) {
                 viewModelScope.launch {
@@ -180,7 +224,6 @@ data class SettingsPlayback(
         }
     }
 
-    /** Guarda el idioma y avisa para reiniciar la app (lo hace la pantalla, que tiene el Context). */
     fun setLanguage(language: AppLanguage, onSaved: () -> Unit) {
         if (language == settings.language) return
         viewModelScope.launch {
@@ -189,18 +232,121 @@ data class SettingsPlayback(
         }
     }
 
-    /** Buscadores de fuentes activados (se pinta aparte del resto del estado). */
+    val lightweightUi: StateFlow<Boolean> =
+        settings.lightweightUi.stateIn(viewModelScope, SharingStarted.Eagerly, settings.lightweightUiEnabled)
+
+    fun setLightweightUi(enabled: Boolean) {
+        viewModelScope.launch { settings.setLightweightUi(enabled) }
+    }
+
+    val introAlways: StateFlow<Boolean> =
+        settings.introAlways.stateIn(viewModelScope, SharingStarted.Eagerly, settings.introAlwaysEnabled)
+
+    fun setIntroAlways(enabled: Boolean) {
+        viewModelScope.launch { settings.setIntroAlways(enabled) }
+    }
+
+    val softBackdrops: StateFlow<Boolean> =
+        settings.softBackdrops.stateIn(viewModelScope, SharingStarted.Eagerly, settings.softBackdropsEnabled)
+
+    fun setSoftBackdrops(enabled: Boolean) {
+        viewModelScope.launch { settings.setSoftBackdrops(enabled) }
+    }
+
+    val highResBackdrops: StateFlow<Boolean> =
+        settings.highResBackdrops.stateIn(viewModelScope, SharingStarted.Eagerly, settings.highResBackdropsEnabled)
+
+    fun setHighResBackdrops(enabled: Boolean) {
+        viewModelScope.launch { settings.setHighResBackdrops(enabled) }
+    }
+
+    val homeRowItemLimit: StateFlow<Int> = settings.homeRowItemLimit
+        .stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            SettingsRepository.DEFAULT_HOME_ROW_ITEM_LIMIT,
+        )
+
+    fun changeHomeRowItemLimit(delta: Int) {
+        viewModelScope.launch {
+            settings.setHomeRowItemLimit(settings.homeRowItemLimit.first() + delta)
+        }
+    }
+
     val providers: StateFlow<Set<SourceProvider>> =
         settings.sourceProviders.stateIn(viewModelScope, SharingStarted.Eagerly, SourceProvider.entries.toSet())
 
-    /** Activa o desactiva un buscador; siempre queda al menos uno. */
+    val sourceExclusions: StateFlow<SourceExclusions> = settings.sourceExclusions
+        .stateIn(viewModelScope, SharingStarted.Eagerly, SourceExclusions())
+
+    fun toggleExcludedQuality(quality: Quality) {
+        viewModelScope.launch {
+            val current = settings.sourceExclusions.first()
+            val qualities = if (quality in current.qualities) current.qualities - quality else current.qualities + quality
+            settings.setSourceExclusions(current.copy(qualities = qualities))
+        }
+    }
+
+    fun toggleExcludedHdrType(hdrType: HdrType) {
+        viewModelScope.launch {
+            val current = settings.sourceExclusions.first()
+            val hdrTypes = if (hdrType in current.hdrTypes) current.hdrTypes - hdrType else current.hdrTypes + hdrType
+            settings.setSourceExclusions(current.copy(hdrTypes = hdrTypes))
+        }
+    }
+
+    fun toggleExcludedAudioCodec(codec: AudioCodec) {
+        viewModelScope.launch {
+            val current = settings.sourceExclusions.first()
+            val audioCodecs = if (codec in current.audioCodecs) current.audioCodecs - codec else current.audioCodecs + codec
+            settings.setSourceExclusions(current.copy(audioCodecs = audioCodecs))
+        }
+    }
+
+    fun setExperimentalSubtitleSync(enabled: Boolean) {
+        viewModelScope.launch { settings.setExperimentalSubtitleSync(enabled) }
+    }
+
+    val matchContentFrameRate: StateFlow<Boolean> = settings.matchContentFrameRate
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    fun setMatchContentFrameRate(enabled: Boolean) {
+        viewModelScope.launch { settings.setMatchContentFrameRate(enabled) }
+    }
+
+    val subtitleAppearance: StateFlow<SubtitleAppearance> = settings.subtitleAppearance
+        .stateIn(viewModelScope, SharingStarted.Eagerly, SubtitleAppearance())
+
+    fun setSubtitleAppearance(appearance: SubtitleAppearance) {
+        viewModelScope.launch { settings.setSubtitleAppearance(appearance.normalized()) }
+    }
+
     fun toggleProvider(p: SourceProvider) {
         viewModelScope.launch {
             val current = settings.sourceProviders.first()
-            // Toda la sección a la vez (los buscadores propios van juntos bajo "The Pirate Bay").
-            val group = SourceProvider.entries.filter { it.section == p.section }.toSet()
+            val group = SourceProvider.entries.filter { texts.get(it.sectionResource) == texts.get(p.sectionResource) }.toSet()
             val next = if (group.all { it in current }) current - group else current + group
             if (next.isNotEmpty()) settings.setSourceProviders(next)
+        }
+    }
+
+    val ithilState: StateFlow<IthilLibraryState> = ithilUpdates.state
+    val ithilUnlocked: StateFlow<Boolean> = ithilAccess.unlocked
+
+    fun onIthilUnlockTap(): Boolean {
+        if (ithilAccess.isUnlocked || !ithilUnlockGesture.registerTap(System.currentTimeMillis())) return false
+        ithilAccess.unlock()
+        return true
+    }
+
+    fun downloadIthil() = ithilScheduler.downloadNow()
+
+    fun deleteIthil() {
+        ithilScheduler.cancelDownloads()
+        viewModelScope.launch {
+            ithilUpdates.delete()
+            val providers = settings.sourceProviders.first() - SourceProvider.ITHIL
+            if (providers.isNotEmpty()) settings.setSourceProviders(providers)
         }
     }
 
@@ -212,12 +358,11 @@ data class SettingsPlayback(
         if (editor.value?.busy != true) editor.value = null
     }
 
-    /** Solo se guarda si el servicio la acepta: así nunca se queda una clave rota guardada. */
     fun saveKey(input: String) {
         val current = editor.value ?: return
         val key = input.trim()
         if (key.isEmpty()) {
-            editor.value = current.copy(error = tr("Escribe la clave primero", "Type the key first"))
+            editor.value = current.copy(error = texts.get(StringsR.string.settings_type_the_key_first))
             return
         }
         editor.value = current.copy(busy = true, error = null)
@@ -233,7 +378,11 @@ data class SettingsPlayback(
         }
     }
 
-    /** Solo para servicios opcionales (SubDL). */
+    fun completeAllDebridConnect() {
+        statuses.update { it + (ApiService.ALLDEBRID to ServiceStatus.Ok(texts.get(StringsR.string.settings_connected))) }
+        editor.value = null
+    }
+
     fun removeKey() {
         val current = editor.value ?: return
         if (current.service.required) return
@@ -248,12 +397,8 @@ data class SettingsPlayback(
         viewModelScope.launch { settings.setDebridService(service) }
     }
 
-    /** "Castellano primero" (aparte del UiState principal: no cambia nada más de la pantalla). */
-    val spanishFirst: StateFlow<Boolean> = settings.spanishFirst
-        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
-
-    fun setSpanishFirst(enabled: Boolean) {
-        viewModelScope.launch { settings.setSpanishFirst(enabled) }
+    fun setDeviceOptimization(optimization: DeviceOptimization) {
+        viewModelScope.launch { settings.setDeviceOptimization(optimization) }
     }
 
     fun setForceSoftwareAudio(enabled: Boolean) {
@@ -268,7 +413,11 @@ data class SettingsPlayback(
         viewModelScope.launch { settings.setAutoFrameRate(enabled) }
     }
 
-    /** Series: siguiente episodio automático. */
+    val episodeNotifications: StateFlow<Boolean> = episodeTracking.notificationsEnabled
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    fun setEpisodeNotifications(enabled: Boolean) = episodeTracking.setNotificationsEnabled(enabled)
+
     val autoNextEpisode: StateFlow<Boolean> = settings.autoNextEpisode
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
 
@@ -314,11 +463,15 @@ data class SettingsPlayback(
     }
 
     fun setSeekThumbnails(enabled: Boolean) {
-        viewModelScope.launch { settings.setSeekThumbnails(enabled) }
+        viewModelScope.launch {
+            if (settings.deviceOptimization.first() == DeviceOptimization.AUTOMATIC) return@launch
+            settings.setSeekThumbnails(enabled)
+        }
     }
 
     fun changeBuffer(deltaSeconds: Int) {
         viewModelScope.launch {
+            if (settings.deviceOptimization.first() == DeviceOptimization.AUTOMATIC) return@launch
             val now = settings.maxBufferSeconds.first()
             settings.setMaxBufferSeconds(now + deltaSeconds)
         }

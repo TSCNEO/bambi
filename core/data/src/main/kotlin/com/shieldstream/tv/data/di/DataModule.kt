@@ -1,12 +1,18 @@
 package com.shieldstream.tv.data.di
 
+import com.shieldstream.tv.data.repository.AllDebridAuthRepositoryImpl
 import com.shieldstream.tv.data.repository.AllDebridRepositoryImpl
 import com.shieldstream.tv.data.repository.ApiKeysRepositoryImpl
+import com.shieldstream.tv.data.repository.EpisodeReleaseRepositoryImpl
+import com.shieldstream.tv.data.repository.EpisodeTrackingRepositoryImpl
 import com.shieldstream.tv.data.repository.TorrentioLinkResolverImpl
 import com.shieldstream.tv.domain.TorrentioLinkResolver
 import com.shieldstream.tv.data.repository.CatalogRepositoryImpl
+import com.shieldstream.tv.domain.AllDebridAuthRepository
 import com.shieldstream.tv.domain.AllDebridRepository
 import com.shieldstream.tv.domain.ApiKeysRepository
+import com.shieldstream.tv.domain.EpisodeReleaseRepository
+import com.shieldstream.tv.domain.EpisodeTrackingRepository
 import com.shieldstream.tv.data.repository.RealDebridRepositoryImpl
 import com.shieldstream.tv.data.repository.SettingsRepositoryImpl
 import com.shieldstream.tv.data.repository.WatchProgressRepositoryImpl
@@ -28,6 +34,12 @@ import com.shieldstream.tv.data.repository.MyListRepositoryImpl
 import com.shieldstream.tv.data.repository.CustomCatalogRepositoryImpl
 import com.shieldstream.tv.domain.MyListRepository
 import com.shieldstream.tv.domain.CustomCatalogRepository
+import com.shieldstream.tv.domain.IthilLibraryRepository
+import com.shieldstream.tv.data.repository.IthilLibraryRepositoryImpl
+import com.shieldstream.tv.data.repository.IthilUpdateRepositoryImpl
+import com.shieldstream.tv.domain.IthilUpdateRepository
+import com.shieldstream.tv.data.repository.IthilAccessRepositoryImpl
+import com.shieldstream.tv.domain.IthilAccessRepository
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -51,6 +63,14 @@ abstract class DataModule {
 
     @Binds
     @Singleton
+    abstract fun bindAllDebridAuthRepository(impl: AllDebridAuthRepositoryImpl): AllDebridAuthRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindAllDebridRepository(impl: AllDebridRepositoryImpl): AllDebridRepository
+
+    @Binds
+    @Singleton
     abstract fun bindTorrentioLinkResolver(impl: TorrentioLinkResolverImpl): TorrentioLinkResolver
 
     @Binds
@@ -67,11 +87,15 @@ abstract class DataModule {
 
     @Binds
     @Singleton
-    abstract fun bindAllDebridRepository(impl: AllDebridRepositoryImpl): AllDebridRepository
+    abstract fun bindCatalogRepository(impl: CatalogRepositoryImpl): CatalogRepository
 
     @Binds
     @Singleton
-    abstract fun bindCatalogRepository(impl: CatalogRepositoryImpl): CatalogRepository
+    abstract fun bindEpisodeTrackingRepository(impl: EpisodeTrackingRepositoryImpl): EpisodeTrackingRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindEpisodeReleaseRepository(impl: EpisodeReleaseRepositoryImpl): EpisodeReleaseRepository
 
     @Binds
     @Singleton
@@ -104,4 +128,16 @@ abstract class DataModule {
     @Binds
     @Singleton
     abstract fun bindCustomCatalogRepository(impl: CustomCatalogRepositoryImpl): CustomCatalogRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindIthilLibraryRepository(impl: IthilLibraryRepositoryImpl): IthilLibraryRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindIthilUpdateRepository(impl: IthilUpdateRepositoryImpl): IthilUpdateRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindIthilAccessRepository(impl: IthilAccessRepositoryImpl): IthilAccessRepository
 }

@@ -1,115 +1,137 @@
 package com.shieldstream.tv.data.repository
 
-import com.shieldstream.tv.data.security.TokenStore
 import com.shieldstream.tv.domain.AllDebridRepository
+import com.shieldstream.tv.domain.ApiKeysRepository
 import com.shieldstream.tv.domain.ApiService
-import com.shieldstream.tv.model.StreamSource
-import com.shieldstream.tv.model.tr
+import com.shieldstream.tv.domain.DebridService
+import com.shieldstream.tv.model.RdTorrentFile
+import com.shieldstream.tv.model.RdTorrentInfo
 import com.shieldstream.tv.network.api.AllDebridApi
-import com.shieldstream.tv.network.dto.AllDebridLinkDto
-import kotlinx.coroutines.delay
+import com.shieldstream.tv.network.api.AllDebridFileDto
+import com.shieldstream.tv.network.api.AllDebridMagnetFilesDto
+import com.shieldstream.tv.network.api.AllDebridResponse
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.Texts
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 
-/**
- * AllDebrid desde la Shield, igual que RealDebridRepositoryImpl: el magnet se añade a la cuenta del usuario y el
- * enlace directo se pide a la API, así no pasa por Torrentio (que no resuelve los buscadores propios).
- *
- * Si el magnet no está en la caché se borra de la cuenta (no se deja descargando) y se avisa para que el
- * reproductor pruebe otra fuente.
- */
 @Singleton
 class AllDebridRepositoryImpl @Inject constructor(
     private val api: AllDebridApi,
-    private val store: TokenStore,
+    private val keys: ApiKeysRepository,
+    private val texts: Texts,
 ) : AllDebridRepository {
 
-    private fun key(): String =
-        store.getSecret(TokenStore.keyNameFor(ApiService.ALLDEBRID))?.trim()?.takeIf { it.isNotBlank() }
-            ?: error(tr("Clave de AllDebrid no configurada", "AllDebrid key not set"))
+    override val requiresFileSelection: Boolean = false
 
-    override suspend fun resolveMagnet(source: StreamSource): String {
-        val apiKey = key()
-        val uploadResp = api.uploadMagnet(apiKey = apiKey, magnet = source.magnet)
-        if (uploadResp.status != "success") {
-            val msg = uploadResp.error?.message ?: tr("Error añadiendo magnet a AllDebrid", "Error adding magnet to AllDebrid")
-            error(msg)
-        }
-        val magnet = uploadResp.data?.magnets?.firstOrNull()
-            ?: error(tr("AllDebrid no devolvió el magnet", "AllDebrid returned no magnet"))
-
-        magnet.error?.let {
-            error(it.message ?: tr("Error en magnet de AllDebrid", "AllDebrid magnet error"))
-        }
-
-        val magnetId = magnet.id
-        var isReady = magnet.ready
-
-        // statusCode 4 = listo en la caché. Un magnet cacheado tarda 1–3 s; el resto no llega: fuera.
-        for (attempt in 1..CACHE_CHECKS) {
-            if (isReady) break
-            delay(POLL_INTERVAL_MS)
-            val m = runCatching { api.magnetStatus(apiKey = apiKey, id = magnetId) }.getOrNull()
-                ?.data?.magnets?.firstOrNull()
-            if (m?.statusCode == STATUS_READY) isReady = true
-        }
-
-        if (!isReady) {
-            runCatching { api.deleteMagnet(apiKey = apiKey, id = magnetId) }
-            throw IllegalStateException(
-                tr(
-                    "Esta fuente no está en la caché de AllDebrid. Prueba otra.",
-                    "This source isn't cached on AllDebrid. Try another.",
-                ),
-            )
-        }
-
-        val statusResp = api.magnetStatus(apiKey = apiKey, id = magnetId)
-        val m = statusResp.data?.magnets?.firstOrNull()
-            ?: error(tr("No se pudo obtener el estado del magnet en AllDebrid", "Couldn't get AllDebrid magnet status"))
-
-        val targetLink = pickFile(m.links, source)
-            ?: error(tr("El torrent no contiene archivos de vídeo en AllDebrid", "Torrent has no video files in AllDebrid"))
-
-        val unlockResp = api.unlockLink(apiKey = apiKey, link = targetLink.link)
-        val unlocked = unlockResp.data?.link?.takeIf { it.isNotBlank() }
-        if (unlockResp.status != "success" || unlocked == null) {
-            val msg = unlockResp.error?.message
-                ?: tr("No se pudo desbloquear el enlace en AllDebrid", "Couldn't unlock link in AllDebrid")
-            error(msg)
-        }
-
-        return unlocked
+    override suspend fun findDownloaded(infoHash: String): String? {
+        // AllDebrid's v4.1 status response does not include hashes. Uploading the magnet is
+        // therefore the first reliable way to obtain its ID; Ready responses remain cache-only.
+        return null
     }
 
-    /** El archivo del episodio dentro de un pack: por nombre, por SxxEyy y, si no, el vídeo más grande. */
-    private fun pickFile(links: List<AllDebridLinkDto>, source: StreamSource): AllDebridLinkDto? {
-        val videos = links.filter { l -> VIDEO_EXTENSIONS.any { l.filename.endsWith(".$it", ignoreCase = true) } }
-        val pool = videos.ifEmpty { links }
-        if (pool.isEmpty()) return null
+    override suspend fun addMagnet(magnet: String): String {
+        val response = api.uploadMagnet(authorization(), magnet)
+        val data = response.requireData()
+        val uploaded = data.magnets.firstOrNull()
+            ?: throw IOException(texts.get(StringsR.string.data_couldn_t_verify))
+        uploaded.error?.let { throw IOException(it.message ?: texts.get(StringsR.string.data_couldn_t_verify)) }
+        return uploaded.id?.takeIf { it > 0 }?.toString()
+            ?: throw IOException(texts.get(StringsR.string.data_couldn_t_verify))
+    }
 
-        source.fileName?.let { name ->
-            pool.firstOrNull { it.filename.equals(name, ignoreCase = true) }?.let { return it }
+    override suspend fun torrentInfo(torrentId: String): RdTorrentInfo {
+        val status = api.magnetStatus(authorization(), torrentId).requireData().magnets
+            .firstOrNull { it.id.toString() == torrentId }
+            ?: throw IOException(texts.get(StringsR.string.data_couldn_t_verify))
+        val files = if (status.statusCode == ALLDEBRID_READY) magnetFiles(torrentId) else emptyList()
+        return RdTorrentInfo(
+            id = torrentId,
+            hash = status.hash.orEmpty(),
+            status = when {
+                status.statusCode == ALLDEBRID_READY -> RdTorrentInfo.STATUS_DOWNLOADED
+                status.statusCode >= ALLDEBRID_FIRST_ERROR -> "error"
+                else -> status.status
+            },
+            files = files,
+            links = files.mapNotNull { it.link },
+        )
+    }
+
+    override suspend fun selectFiles(torrentId: String, fileIds: List<Int>) {
+        // AllDebrid exposes links for every file when Ready; selection happens locally.
+    }
+
+    override suspend fun deleteTorrent(torrentId: String) {
+        runCatching { api.deleteMagnet(authorization(), torrentId) }
+    }
+
+    override suspend fun unrestrict(link: String): String {
+        return try {
+            val response = api.unlock(agent = "Bambi", apiKey = key(), link = link)
+            val unlocked = response.data?.link.orEmpty()
+            if (response.status != "success" || unlocked.isBlank()) {
+                throw IOException(
+                    response.error?.message ?: texts.get(StringsR.string.data_couldn_t_unrestrict_the_link),
+                )
+            }
+            unlocked
+        } catch (e: CancellationException) {
+            throw e
+        }
+    }
+
+    private suspend fun magnetFiles(torrentId: String): List<RdTorrentFile> {
+        val magnet = api.magnetFiles(authorization(), torrentId).requireData().magnets.firstOrNull()
+            ?: throw IOException(texts.get(StringsR.string.data_empty_response))
+        magnet.error?.let { error ->
+            throw IOException(error.message ?: texts.get(StringsR.string.data_empty_response))
+        }
+        return flattenFiles(magnet)
+    }
+
+    private fun flattenFiles(magnet: AllDebridMagnetFilesDto): List<RdTorrentFile> {
+        val result = mutableListOf<RdTorrentFile>()
+
+        fun visit(nodes: List<AllDebridFileDto>, parent: String) {
+            nodes.forEach { node ->
+                val path = if (parent.isEmpty()) node.n else "$parent/${node.n}"
+                val children = node.e
+                if (children != null) {
+                    visit(children, path)
+                } else {
+                    result += RdTorrentFile(
+                        id = result.size + 1,
+                        name = path,
+                        sizeBytes = node.s,
+                        selected = true,
+                        link = node.l,
+                    )
+                }
+            }
         }
 
-        val s = source.season
-        val e = source.episode
-        if (s != null && e != null) {
-            val tag = "s%02de%02d".format(s, e)
-            pool.firstOrNull { it.filename.lowercase().contains(tag) }?.let { return it }
-        }
+        visit(magnet.files, parent = "")
+        return result
+    }
 
-        return pool.maxByOrNull { it.size }
+    private fun authorization(): String = "Bearer ${key()}"
+
+    private fun key(): String = keys.keys.value[ApiService.ALLDEBRID]
+        ?.takeIf { it.isNotBlank() }
+        ?: error(texts.get(StringsR.string.data_debrid_key_missing, DebridService.ALLDEBRID.title))
+
+    private fun <T> AllDebridResponse<T>.requireData(): T {
+        if (status != "success") {
+            throw IOException(error?.message ?: texts.get(StringsR.string.data_couldn_t_verify))
+        }
+        return data ?: throw IOException(texts.get(StringsR.string.data_couldn_t_verify))
     }
 
     private companion object {
-        val VIDEO_EXTENSIONS = listOf("mkv", "mp4", "avi", "mov", "m4v", "wmv", "flv", "webm", "ts")
-
-        /** 4 intentos × 1,5 s: un magnet en caché de AllDebrid está listo en 2–4 s. */
-        const val CACHE_CHECKS = 4
-        const val POLL_INTERVAL_MS = 1_500L
-
-        /** AllDebrid: 4 = listo (el magnet está completo en la cuenta). */
-        const val STATUS_READY = 4
+        const val ALLDEBRID_READY = 4
+        const val ALLDEBRID_FIRST_ERROR = 5
     }
 }

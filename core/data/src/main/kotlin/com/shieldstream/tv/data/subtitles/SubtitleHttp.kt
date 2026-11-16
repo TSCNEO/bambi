@@ -1,6 +1,7 @@
 package com.shieldstream.tv.data.subtitles
 
-import com.shieldstream.tv.model.tr
+import com.shieldstream.tv.strings.Texts
+import com.shieldstream.tv.strings.R as StringsR
 import android.util.Log
 import okhttp3.Dns
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -11,23 +12,14 @@ import java.net.UnknownHostException
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * Cliente HTTP para subtítulos con DNS de respaldo.
- * Algunas operadoras/filtros DNS no resuelven webs de subtítulos (p. ej. podnapisi.net):
- * si el DNS del sistema falla, se resuelve por DNS-over-HTTPS.
- */
 @Singleton
-class SubtitleHttp @Inject constructor(base: OkHttpClient) {
+class SubtitleHttp @Inject constructor(base: OkHttpClient, texts: Texts) {
     val client: OkHttpClient = base.newBuilder()
-        .dns(FallbackDns(base))
+        .dns(FallbackDns(base, texts))
         .build()
 }
 
-/**
- * Sistema → Google → Quad9 → Cloudflare. Varios porque el almacén de certificados de Android 11
- * (Shield) no confía en todas las CA actuales (Cloudflare falla con "Trust anchor not found").
- */
-private class FallbackDns(bootstrap: OkHttpClient) : Dns {
+private class FallbackDns(bootstrap: OkHttpClient, private val texts: Texts) : Dns {
     private val resolvers: List<Pair<String, Dns>> = listOf(
         doh(bootstrap, "Google", "https://dns.google/dns-query", "8.8.8.8", "8.8.4.4"),
         doh(bootstrap, "Quad9", "https://dns.quad9.net/dns-query", "9.9.9.9", "149.112.112.112"),
@@ -45,11 +37,10 @@ private class FallbackDns(bootstrap: OkHttpClient) : Dns {
                 return resolver.lookup(hostname).also { Log.i("Subtitles", "$hostname resuelto vía $name") }
             } catch (e: Exception) {
                 Log.w("Subtitles", "DoH $name falló para $hostname: ${e.message}")
-                // NXDOMAIN = respuesta válida "no existe": no tiene sentido preguntar a otro.
                 if (e.message?.contains("NXDOMAIN") == true) break
             }
         }
-        throw UnknownHostException(tr("No se pudo resolver $hostname (ni por DNS-over-HTTPS)", "Couldn't resolve $hostname (not even via DNS-over-HTTPS)"))
+        throw UnknownHostException(texts.get(StringsR.string.data_dns_resolve_failed, hostname))
     }
 
     private companion object {

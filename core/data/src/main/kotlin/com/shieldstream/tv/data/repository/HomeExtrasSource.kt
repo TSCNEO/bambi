@@ -1,7 +1,8 @@
 package com.shieldstream.tv.data.repository
 
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.Texts
 import com.shieldstream.tv.model.Lang
-import com.shieldstream.tv.model.tr
 import android.content.Context
 import com.shieldstream.tv.model.CatalogItem
 import com.shieldstream.tv.model.CatalogRow
@@ -14,10 +15,8 @@ import com.shieldstream.tv.network.api.TmdbApi
 import com.shieldstream.tv.data.security.TokenStore
 import com.shieldstream.tv.network.dto.TmdbContentRatingsDto
 import com.shieldstream.tv.network.dto.TmdbImagesDto
-import com.shieldstream.tv.network.dto.TmdbMovieDto
 import com.shieldstream.tv.network.dto.TmdbReleaseDatesDto
 import com.shieldstream.tv.network.dto.TmdbSearchResultDto
-import com.shieldstream.tv.network.dto.TmdbTvDto
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -30,17 +29,13 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * Portada grande (destacados de la semana) y pantallas de categoría del Inicio.
- * Separado de CatalogRepositoryImpl para no engordarlo; este delega aquí.
- */
 @Singleton
 class HomeExtrasSource @Inject constructor(
     private val tmdb: TmdbApi,
     @ApplicationContext context: Context,
     private val store: TokenStore,
+    private val texts: Texts,
 ) {
-    /** Clave de TMDB de Ajustes (ver CatalogRepositoryImpl). */
     private val key: String get() = store.tmdbKey.orEmpty()
     private val prefs = context.getSharedPreferences("featured", Context.MODE_PRIVATE)
     private val keywordIds = ConcurrentHashMap<String, Int>()
@@ -51,10 +46,6 @@ class HomeExtrasSource @Inject constructor(
 
     private data class Pick(val type: MediaType, val id: Int, val badge: FeaturedBadge)
 
-    /**
-     * Destacados de la semana. Se eligen el primer día que se abre la app en la semana (lunes a domingo) y
-     * se guardan: toda la semana sale lo mismo (con datos frescos: nota, logo…). La semana siguiente, nuevos.
-     */
     suspend fun featured(filter: HomeFilter): List<FeaturedItem> {
         val week = weekKey()
         val prefKey = "week_${filter.name}"
@@ -66,10 +57,6 @@ class HomeExtrasSource @Inject constructor(
         }
     }
 
-    /**
-     * Portada del perfil infantil: lo más popular para niños (películas de animación/familia hasta PG en EE. UU.
-     * y series del género Infantil), no las tendencias generales. Sin guardar por semanas: va en la caché del Inicio.
-     */
     suspend fun kidsFeatured(filter: HomeFilter): List<FeaturedItem> = coroutineScope {
         val movieParams = mapOf(
             "with_genres" to "16|10751",
@@ -117,7 +104,6 @@ class HomeExtrasSource @Inject constructor(
         picks.map { pick -> async { runCatching { loadFeatured(pick) }.getOrNull() } }.awaitAll().filterNotNull()
     }
 
-    /** Tendencias de la semana (TMDB) → hasta 5 destacados con su "motivo". */
     private suspend fun choosePicks(filter: HomeFilter): List<Pick> {
         val trending = (tmdb.trendingAllWeek(key, 1).results + runCatching { tmdb.trendingAllWeek(key, 2).results }.getOrDefault(emptyList()))
             .filter { it.media_type == "movie" || it.media_type == "tv" }
@@ -144,11 +130,8 @@ class HomeExtrasSource @Inject constructor(
         fun unused(predicate: (TmdbSearchResultDto) -> Boolean) =
             trending.firstOrNull { it.media_type + it.id !in used && predicate(it) }
 
-        // 1. Recién llegada: lo más visto de la semana estrenado en los últimos 60 días.
         add(unused { dateOf(it) in recentLimit..today }, FeaturedBadge.NEW)
-        // 2. La más popular: el número 1 de la semana.
         add(unused { true }, FeaturedBadge.POPULAR)
-        // 3. Del momento: la serie / película más vista que aún no haya salido.
         when (filter) {
             HomeFilter.ALL -> {
                 add(unused { it.media_type == "tv" }, FeaturedBadge.SERIES_NOW)
@@ -156,7 +139,6 @@ class HomeExtrasSource @Inject constructor(
             }
             else -> add(unused { true }, FeaturedBadge.RISING)
         }
-        // 4. Aclamada: la mejor nota entre las tendencias con suficientes votos.
         add(
             trending.filter { it.media_type + it.id !in used && it.vote_count >= 300 }.maxByOrNull { it.vote_average },
             FeaturedBadge.ACCLAIMED,
@@ -177,8 +159,8 @@ class HomeExtrasSource @Inject constructor(
                 type = MediaType.MOVIE,
                 title = d.title,
                 overview = d.overview,
-                posterUrl = d.poster_path?.let { "$IMG/w342$it" },
-                backdropUrl = d.backdrop_path?.let { "$IMG/w1280$it" } ?: return null,
+                posterUrl = d.poster_path?.let(TmdbImages::poster),
+                backdropUrl = d.backdrop_path?.let(TmdbImages::backdrop) ?: return null,
                 year = d.release_date?.take(4)?.toIntOrNull(),
                 rating = d.vote_average.toFloat(),
                 genres = d.genres.map { it.name },
@@ -201,8 +183,8 @@ class HomeExtrasSource @Inject constructor(
                 type = MediaType.TV,
                 title = d.name,
                 overview = d.overview,
-                posterUrl = d.poster_path?.let { "$IMG/w342$it" },
-                backdropUrl = d.backdrop_path?.let { "$IMG/w1280$it" } ?: return null,
+                posterUrl = d.poster_path?.let(TmdbImages::poster),
+                backdropUrl = d.backdrop_path?.let(TmdbImages::backdrop) ?: return null,
                 year = d.first_air_date?.take(4)?.toIntOrNull(),
                 rating = d.vote_average.toFloat(),
                 genres = d.genres.map { it.name },
@@ -210,7 +192,7 @@ class HomeExtrasSource @Inject constructor(
             badge = pick.badge,
             logoUrl = pickLogo(d.images),
             genre = d.genres.firstOrNull()?.name,
-            durationText = seasons.takeIf { it > 0 }?.let { if (it == 1) tr("1 temporada", "1 season") else tr("$it temporadas", "$it seasons") },
+            durationText = seasons.takeIf { it > 0 }?.let { if (it == 1) texts.get(StringsR.string.data_1_season) else texts.get(StringsR.string.data_season_count, it) },
             certification = tvCertification(d.content_ratings),
         )
     }
@@ -232,7 +214,6 @@ class HomeExtrasSource @Inject constructor(
     private fun writePicks(week: String, picks: List<Pick>) =
         week + "|" + picks.joinToString("|") { "${it.type.name}:${it.id}:${it.badge.name}" }
 
-    /** Año + número de semana (lunes a domingo). */
     private fun weekKey(): String {
         val c = Calendar.getInstance(Locale("es", "ES"))
         c.firstDayOfWeek = Calendar.MONDAY
@@ -241,23 +222,22 @@ class HomeExtrasSource @Inject constructor(
     }
 
     // =====================================================================================
-    // Categorías
     // =====================================================================================
 
-    /** Consulta de TMDB discover para películas o series. Las palabras clave se traducen a id al usarlas. */
     private data class Query(
         val genres: String? = null,
         val keyword: String? = null,
         val language: String? = null,
-        /** País de origen (ES, KR…): with_origin_country. */
         val country: String? = null,
     )
 
     private data class Spec(val movie: Query?, val tv: Query?)
 
     private fun spec(category: Category): Spec = when (category) {
+        Category.ACCLAIMED -> Spec(Query(), Query())
+        Category.CLASSICS -> Spec(Query(), null)
         Category.DRAMAS -> Spec(Query("18"), Query("18"))
-        Category.THRILLERS -> Spec(Query("53"), Query("9648")) // series: misterio (TMDB no tiene "thriller" en TV)
+        Category.THRILLERS -> Spec(Query("53"), Query("9648"))
         Category.CRIME -> Spec(Query("80"), Query("80"))
         Category.ACTION -> Spec(Query("28"), Query("10759"))
         Category.BOOKS -> Spec(Query(keyword = "based on novel or book"), Query(keyword = "based on novel or book"))
@@ -273,8 +253,8 @@ class HomeExtrasSource @Inject constructor(
         Category.DOCUMENTARY -> Spec(Query("99"), Query("99"))
         Category.ASTROLOGY -> Spec(Query(keyword = "astrology"), Query(keyword = "astrology"))
         Category.STANDUP -> Spec(Query(keyword = "stand-up comedy"), Query(keyword = "stand-up comedy"))
-        Category.MOODS -> Spec(null, null) // filas propias (ver moodRows)
-        Category.HORROR -> Spec(Query("27"), Query(keyword = "horror")) // TMDB no tiene "terror" en series
+        Category.MOODS -> Spec(null, null)
+        Category.HORROR -> Spec(Query("27"), Query(keyword = "horror"))
         Category.SPANISH -> Spec(Query(country = "ES"), Query(country = "ES"))
         Category.ADVENTURE -> Spec(Query("12"), Query("10759"))
         Category.MYSTERY -> Spec(Query("9648"), Query("9648"))
@@ -287,8 +267,12 @@ class HomeExtrasSource @Inject constructor(
     }
 
     suspend fun categoryRows(category: Category, filter: HomeFilter): List<CatalogRow> = coroutineScope {
-        val loaders: List<Pair<String, suspend () -> List<CatalogItem>>> =
-            if (category == Category.MOODS) moodRows(filter) else standardRows(category, filter)
+        val loaders: List<Pair<String, suspend () -> List<CatalogItem>>> = when (category) {
+            Category.MOODS -> moodRows(filter)
+            Category.ACCLAIMED -> acclaimedRows(filter)
+            Category.CLASSICS -> classicRows(filter)
+            else -> standardRows(category, filter)
+        }
         loaders.mapIndexed { index, (title, load) ->
             async {
                 runCatching {
@@ -299,6 +283,38 @@ class HomeExtrasSource @Inject constructor(
         }.awaitAll().filterNotNull().filter { it.items.isNotEmpty() }
     }
 
+    private fun acclaimedRows(filter: HomeFilter): List<Pair<String, suspend () -> List<CatalogItem>>> = when (filter) {
+        HomeFilter.ALL -> listOf(
+            texts.get(StringsR.string.data_top_rated) to suspend {
+                mix(movies(Query(), acclaimed(500)), series(Query(), acclaimed(150)))
+            },
+            texts.get(StringsR.string.data_acclaimed_movies) to suspend { movies(Query(), acclaimed(500), page = 2) },
+            texts.get(StringsR.string.data_acclaimed_tv_shows) to suspend { series(Query(), acclaimed(150), page = 2) },
+            texts.get(StringsR.string.data_more_gems_to_discover) to suspend {
+                mix(movies(Query(), acclaimed(500), page = 3), series(Query(), acclaimed(150), page = 3))
+            },
+        )
+        HomeFilter.MOVIES -> listOf(
+            texts.get(StringsR.string.data_acclaimed_movies) to suspend { movies(Query(), acclaimed(500)) },
+            texts.get(StringsR.string.data_more_acclaimed_movies) to suspend { movies(Query(), acclaimed(500), page = 2) },
+            texts.get(StringsR.string.data_gems_to_discover) to suspend { movies(Query(), acclaimed(500), page = 3) },
+        )
+        HomeFilter.TV -> listOf(
+            texts.get(StringsR.string.data_acclaimed_tv_shows) to suspend { series(Query(), acclaimed(150)) },
+            texts.get(StringsR.string.data_more_acclaimed_tv_shows) to suspend { series(Query(), acclaimed(150), page = 2) },
+            texts.get(StringsR.string.data_gems_to_discover) to suspend { series(Query(), acclaimed(150), page = 3) },
+        )
+    }
+
+    private fun classicRows(filter: HomeFilter): List<Pair<String, suspend () -> List<CatalogItem>>> {
+        if (filter == HomeFilter.TV) return emptyList()
+        return listOf(
+            texts.get(StringsR.string.data_classic_movies) to suspend { movies(Query(), CLASSIC_MOVIES) },
+            texts.get(StringsR.string.data_more_classic_movies) to suspend { movies(Query(), CLASSIC_MOVIES, page = 2) },
+            texts.get(StringsR.string.data_classics_to_discover) to suspend { movies(Query(), CLASSIC_MOVIES, page = 3) },
+        )
+    }
+
     private fun standardRows(category: Category, filter: HomeFilter): List<Pair<String, suspend () -> List<CatalogItem>>> {
         val s = spec(category)
         val movie = s.movie.takeIf { filter != HomeFilter.TV }
@@ -306,38 +322,37 @@ class HomeExtrasSource @Inject constructor(
         val rows = ArrayList<Pair<String, suspend () -> List<CatalogItem>>>()
         val today = isoDate(Date())
         if (movie != null && tv != null) {
-            rows += tr("Lo más popular", "Most popular") to suspend { mix(movies(movie, POPULAR), series(tv, POPULAR)) }
-            rows += tr("Películas", "Movies") to suspend { movies(movie, POPULAR, page = 2) }
-            rows += tr("Series", "TV shows") to suspend { series(tv, POPULAR, page = 2) }
-            rows += tr("Las mejor valoradas", "Top rated") to suspend { mix(movies(movie, topRated(500)), series(tv, topRated(150))) }
-            rows += tr("Novedades", "New releases") to suspend { mix(movies(movie, newest(today, movie = true)), series(tv, newest(today, movie = false))) }
-            rows += tr("Más para descubrir", "More to discover") to suspend { mix(movies(movie, POPULAR, page = 3), series(tv, POPULAR, page = 3)) }
+            rows += texts.get(StringsR.string.data_most_popular) to suspend { mix(movies(movie, POPULAR), series(tv, POPULAR)) }
+            rows += texts.get(StringsR.string.data_movies) to suspend { movies(movie, POPULAR, page = 2) }
+            rows += texts.get(StringsR.string.data_tv_shows) to suspend { series(tv, POPULAR, page = 2) }
+            rows += texts.get(StringsR.string.data_top_rated) to suspend { mix(movies(movie, topRated(500)), series(tv, topRated(150))) }
+            rows += texts.get(StringsR.string.data_new_releases) to suspend { mix(movies(movie, newest(today, movie = true)), series(tv, newest(today, movie = false))) }
+            rows += texts.get(StringsR.string.data_more_to_discover) to suspend { mix(movies(movie, POPULAR, page = 3), series(tv, POPULAR, page = 3)) }
         } else if (movie != null) {
-            rows += tr("Lo más popular", "Most popular") to suspend { movies(movie, POPULAR) }
-            rows += tr("Las mejor valoradas", "Top rated") to suspend { movies(movie, topRated(500)) }
-            rows += tr("Novedades", "New releases") to suspend { movies(movie, newest(today, movie = true)) }
-            rows += tr("Más populares", "Most popular") to suspend { movies(movie, POPULAR, page = 2) }
-            rows += tr("Más para descubrir", "More to discover") to suspend { movies(movie, POPULAR, page = 3) }
+            rows += texts.get(StringsR.string.data_most_popular) to suspend { movies(movie, POPULAR) }
+            rows += texts.get(StringsR.string.data_top_rated) to suspend { movies(movie, topRated(500)) }
+            rows += texts.get(StringsR.string.data_new_releases) to suspend { movies(movie, newest(today, movie = true)) }
+            rows += texts.get(StringsR.string.data_most_popular_60061e) to suspend { movies(movie, POPULAR, page = 2) }
+            rows += texts.get(StringsR.string.data_more_to_discover) to suspend { movies(movie, POPULAR, page = 3) }
         } else if (tv != null) {
-            rows += tr("Lo más popular", "Most popular") to suspend { series(tv, POPULAR) }
-            rows += tr("Las mejor valoradas", "Top rated") to suspend { series(tv, topRated(150)) }
-            rows += tr("Novedades", "New releases") to suspend { series(tv, newest(today, movie = false)) }
-            rows += tr("Más populares", "Most popular") to suspend { series(tv, POPULAR, page = 2) }
-            rows += tr("Más para descubrir", "More to discover") to suspend { series(tv, POPULAR, page = 3) }
+            rows += texts.get(StringsR.string.data_most_popular) to suspend { series(tv, POPULAR) }
+            rows += texts.get(StringsR.string.data_top_rated) to suspend { series(tv, topRated(150)) }
+            rows += texts.get(StringsR.string.data_new_releases) to suspend { series(tv, newest(today, movie = false)) }
+            rows += texts.get(StringsR.string.data_most_popular_60061e) to suspend { series(tv, POPULAR, page = 2) }
+            rows += texts.get(StringsR.string.data_more_to_discover) to suspend { series(tv, POPULAR, page = 3) }
         }
         return rows
     }
 
-    /** "Estados de ánimo": una fila por estado. Géneros separados por | = cualquiera de ellos. */
     private fun moodRows(filter: HomeFilter): List<Pair<String, suspend () -> List<CatalogItem>>> {
         val moods = listOf(
-            Triple(tr("Para reír", "For a laugh"), Query("35"), Query("35")),
-            Triple(tr("Para emocionarse", "Feel the emotion"), Query("18,10749"), Query("18")),
-            Triple(tr("Con el corazón en un puño", "On the edge of your seat"), Query("53"), Query("9648|80")),
-            Triple(tr("Para pasar miedo", "For a scare"), Query("27"), Query("9648,10765")),
-            Triple(tr("Para desconectar", "To unwind"), Query("16|10751"), Query("16|10751")),
-            Triple(tr("Para soñar despierto", "To daydream"), Query("14|12"), Query("10765")),
-            Triple(tr("Para pensar", "Food for thought"), Query("99|36"), Query("99")),
+            Triple(texts.get(StringsR.string.data_for_a_laugh), Query("35"), Query("35")),
+            Triple(texts.get(StringsR.string.data_feel_the_emotion), Query("18,10749"), Query("18")),
+            Triple(texts.get(StringsR.string.data_on_the_edge_of_your_seat), Query("53"), Query("9648|80")),
+            Triple(texts.get(StringsR.string.data_for_a_scare), Query("27"), Query("9648,10765")),
+            Triple(texts.get(StringsR.string.data_to_unwind), Query("16|10751"), Query("16|10751")),
+            Triple(texts.get(StringsR.string.data_to_daydream), Query("14|12"), Query("10765")),
+            Triple(texts.get(StringsR.string.data_food_for_thought), Query("99|36"), Query("99")),
         )
         return moods.map { (title, movie, tv) ->
             title to suspend {
@@ -352,12 +367,12 @@ class HomeExtrasSource @Inject constructor(
 
     private suspend fun movies(q: Query, extra: Map<String, String>, page: Int = 1): List<CatalogItem> {
         val p = params(q, extra, page) ?: return emptyList()
-        return tmdb.discoverMovieQuery(key, p).results.map { it.toItem() }
+        return tmdb.discoverMovieQuery(key, p).results.map { it.toCatalogItem() }
     }
 
     private suspend fun series(q: Query, extra: Map<String, String>, page: Int = 1): List<CatalogItem> {
         val p = params(q, extra, page) ?: return emptyList()
-        return tmdb.discoverTvQuery(key, p).results.map { it.toItem() }
+        return tmdb.discoverTvQuery(key, p).results.map { it.toCatalogItem() }
     }
 
     private suspend fun params(q: Query, extra: Map<String, String>, page: Int): Map<String, String>? {
@@ -372,7 +387,6 @@ class HomeExtrasSource @Inject constructor(
         return p
     }
 
-    /** Id de palabra clave de TMDB por su nombre ("halloween" → 3335). Se busca una vez y se recuerda. */
     private suspend fun keywordId(name: String): Int? {
         keywordIds[name]?.let { return it }
         val results = tmdb.searchKeyword(key, name).results
@@ -381,7 +395,6 @@ class HomeExtrasSource @Inject constructor(
         return id
     }
 
-    /** Intercala películas y series: P, S, P, S… */
     private fun mix(a: List<CatalogItem>, b: List<CatalogItem>): List<CatalogItem> {
         val out = ArrayList<CatalogItem>(a.size + b.size)
         for (i in 0 until maxOf(a.size, b.size)) {
@@ -393,6 +406,8 @@ class HomeExtrasSource @Inject constructor(
 
     private fun topRated(minVotes: Int) = mapOf("sort_by" to "vote_average.desc", "vote_count.gte" to minVotes.toString())
 
+    private fun acclaimed(minVotes: Int) = topRated(minVotes) + ("vote_average.gte" to "7.5")
+
     private fun newest(today: String, movie: Boolean) = if (movie) {
         mapOf("sort_by" to "primary_release_date.desc", "primary_release_date.lte" to today, "vote_count.gte" to "20")
     } else {
@@ -403,46 +418,8 @@ class HomeExtrasSource @Inject constructor(
     // Utilidades
     // =====================================================================================
 
-    private fun TmdbMovieDto.toItem() = CatalogItem(
-        id = id.toString(),
-        imdbId = null,
-        type = MediaType.MOVIE,
-        title = title,
-        overview = overview,
-        posterUrl = poster_path?.let { "$IMG/w342$it" },
-        backdropUrl = backdrop_path?.let { "$IMG/w1280$it" },
-        year = release_date?.take(4)?.toIntOrNull(),
-        rating = vote_average.toFloat(),
-    )
+    private fun pickLogo(images: TmdbImagesDto?): String? = TmdbImages.logo(images, Lang.current.code)
 
-    private fun TmdbTvDto.toItem() = CatalogItem(
-        id = id.toString(),
-        imdbId = null,
-        type = MediaType.TV,
-        title = name,
-        overview = overview,
-        posterUrl = poster_path?.let { "$IMG/w342$it" },
-        backdropUrl = backdrop_path?.let { "$IMG/w1280$it" },
-        year = first_air_date?.take(4)?.toIntOrNull(),
-        rating = vote_average.toFloat(),
-    )
-
-    private fun pickLogo(images: TmdbImagesDto?): String? {
-        val logos = images?.logos.orEmpty().filter { it.file_path.isNotBlank() && !it.file_path.endsWith(".svg") }
-        val best = logos.sortedWith(
-            compareBy<com.shieldstream.tv.network.dto.TmdbImageDto> {
-                when (it.iso_639_1) {
-                    Lang.current.code -> 0
-                    "en" -> 1
-                    null -> 2
-                    else -> 3
-                }
-            }.thenByDescending { it.vote_average },
-        ).firstOrNull()
-        return best?.let { "$IMG/w500${it.file_path}" }
-    }
-
-    /** Edad recomendada: la del país del idioma (España / EE. UU.); si no hay, la del otro. Misma escala para ambos. */
     private fun movieCertification(dates: TmdbReleaseDatesDto?): String? {
         fun of(country: String) = dates?.results?.firstOrNull { it.iso_3166_1 == country }
             ?.release_dates?.map { it.certification.trim() }?.firstOrNull { it.isNotEmpty() }
@@ -459,7 +436,7 @@ class HomeExtrasSource @Inject constructor(
     private fun normalizeCertification(raw: String?): String? {
         val c = raw?.trim()?.uppercase(Locale.ROOT)?.takeIf { it.isNotEmpty() } ?: return null
         return when {
-            c == "A" || c == "TP" || c == "APTA" || c == "G" || c == "TV-G" || c == "TV-Y" || c == "ALL" -> tr("TP", "ALL")
+            c == "A" || c == "TP" || c == "APTA" || c == "G" || c == "TV-G" || c == "TV-Y" || c == "ALL" -> texts.get(StringsR.string.data_all)
             c.all { it.isDigit() } -> "$c+"
             c == "PG" || c == "TV-Y7" || c == "TV-PG" -> "7+"
             c == "PG-13" || c == "TV-14" -> "13+"
@@ -482,7 +459,12 @@ class HomeExtrasSource @Inject constructor(
     private fun isoDate(date: Date): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(date)
 
     private companion object {
-        const val IMG = "https://image.tmdb.org/t/p"
         val POPULAR = mapOf("sort_by" to "popularity.desc", "vote_count.gte" to "30")
+        val CLASSIC_MOVIES = mapOf(
+            "sort_by" to "popularity.desc",
+            "primary_release_date.lte" to "1999-12-31",
+            "vote_average.gte" to "8.0",
+            "vote_count.gte" to "500",
+        )
     }
 }

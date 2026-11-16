@@ -1,6 +1,7 @@
 package com.shieldstream.tv.media
 
 import com.shieldstream.tv.model.Lang
+import com.shieldstream.tv.model.PlaybackPolicy
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.media.MediaFormat
@@ -11,6 +12,8 @@ import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -32,24 +35,20 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import android.media.MediaCodecInfo.CodecProfileLevel as AndroidProfileLevel
 
-/**
- * Construye el ExoPlayer/Media3 optimizado para Tegra X1+:
- *  - MediaCodec con aceleración HW (HEVC/VP9 nativas).
- *  - Fallback de decodificador como último recurso.
- *  - Dolby Vision perfil 5/8 → decoder DV del Shield. Perfil 7 → capa base HEVC (HDR10), ver abajo.
- *  - Audio en español si existe, si no inglés (antes cogía la pista "default", a veces rusa).
- *  - LoadControl agresivo (buffer 50–100 s) para evitar micro-stutters.
- */
 @OptIn(UnstableApi::class)
 @Singleton
 class Media3Factory @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
-    fun createPlayer(maxBufferSeconds: Int, forceSoftwareAudio: Boolean = false): ExoPlayer {
+    val dataSourceFactory: DataSource.Factory = DefaultDataSource.Factory(context)
+
+    fun createPlayer(policy: PlaybackPolicy): ExoPlayer =
+        createPlayer(policy, forceSoftwareAudio = false)
+
+    fun createPlayer(policy: PlaybackPolicy, forceSoftwareAudio: Boolean): ExoPlayer {
         val codecSelector = MediaCodecSelector { mimeType, secure, tunneling ->
             val infos = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling)
             if (mimeType == MimeTypes.VIDEO_DOLBY_VISION) {
-                // Prioriza el decodificador DV del Shield (OMX.Nvidia.DOVI.decode).
                 infos.sortedByDescending { it.name.contains("dovi", ignoreCase = true) || it.name.contains(".dv", ignoreCase = true) }
             } else {
                 infos
@@ -77,43 +76,32 @@ class Media3Factory @Inject constructor(
         val trackSelector = DefaultTrackSelector(context).apply {
             setParameters(
                 buildUponParameters()
-                    // Audio: el del idioma de la app primero (fijo hasta reiniciar: el player se crea de nuevo).
                     .setPreferredAudioLanguages(*if (Lang.isEnglish) arrayOf("en", "eng", "es", "spa") else arrayOf("es", "spa", "en", "eng"))
-                    // Subtítulos desactivados por defecto (como Netflix): se ignora la marca "default"
-                    // que traen muchos releases (p. ej. checo). Los forzados sí se muestran.
                     .setIgnoredTextSelectionFlags(C.SELECTION_FLAG_DEFAULT),
             )
         }
 
-        val maxBufferMs = maxBufferSeconds.coerceIn(50, 100) * 1000
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                /* minBufferMs */ 50_000,
-                /* maxBufferMs */ maxBufferMs,
-                /* bufferForPlaybackMs */ 5_000,
-                /* bufferForPlaybackAfterRebufferMs */ 10_000,
+                /* minBufferMs */ policy.minBufferSeconds * 1000,
+                /* maxBufferMs */ policy.maxBufferSeconds * 1000,
+                /* bufferForPlaybackMs */ policy.bufferForPlaybackMs,
+                /* bufferForPlaybackAfterRebufferMs */ policy.bufferForPlaybackAfterRebufferMs,
             )
-            .setBackBuffer(/* durationMs */ 15_000, /* retainAfterEnd */ false)
-            // Tope en MB: el búfer vive en la memoria Java de la app. Sin tope, un 4K remux llenaba ~180 MB y, con las
-            // miniaturas, se pasaba del límite (OutOfMemoryError: vídeo congelado o cierre). Con bitrates normales
-            // se siguen cumpliendo los segundos de Ajustes; en remux 4K manda este tope.
-            .setTargetBufferBytes(112 * 1024 * 1024)
+            .setBackBuffer(/* durationMs */ policy.backBufferMs, /* retainAfterEnd */ false)
+            .setTargetBufferBytes(policy.targetBufferBytes)
             .setPrioritizeTimeOverSizeThresholds(false)
             .build()
 
         return ExoPlayer.Builder(context, renderersFactory)
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
-            // MKV con una pista comprimida (zlib): se ignora esa pista y se reproduce el resto (antes: error al abrir).
-            .setMediaSourceFactory(DefaultMediaSourceFactory(context, LenientExtractorsFactory()))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory, LenientExtractorsFactory()))
             .build()
-            // Log de decoders/formatos/errores (tag EventLogger) para diagnosticar pantallas negras.
-            // Solo en "Bambi (pruebas)".
             .also { if (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) it.addAnalyticsListener(EventLogger()) }
     }
 }
 
-/** Sustituye el renderer de vídeo por defecto por uno que entiende Dolby Vision perfil 7. */
 @OptIn(UnstableApi::class)
 private class ShieldRenderersFactory(
     context: Context,
@@ -186,12 +174,7 @@ private class ShieldRenderersFactory(
                 eventListener,
             ),
         )
-        // AV1 por CPU con dav1d (el de VLC/Kodi): en 10 bits sobre ARM rinde mucho más que libgav1.
-        // Si su .so no carga, supportsFormat devuelve "no soportado" y entra libgav1 (abajo) como reserva.
         out.add(Dav1dVideoRenderer(allowedVideoJoiningTimeMs, eventHandler, eventListener, 50))
-        // AV1 por CPU (libgav1): la Shield no tiene AV1 por hardware. Va DETRÁS del renderer MediaCodec,
-        // así que solo entra cuando ningún decoder hardware admite la pista. Se carga por reflexión:
-        // el .aar nativo vive en app/libs y este módulo no depende de él al compilar.
         runCatching {
             val clazz = Class.forName("androidx.media3.decoder.av1.Libgav1VideoRenderer")
             val ctor = clazz.getConstructor(
@@ -206,13 +189,6 @@ private class ShieldRenderersFactory(
     }
 }
 
-/**
- * Dolby Vision PERFIL 7 (doble capa: los REMUX de UHD Blu-ray) NO lo soporta el decoder DV del
- * Shield (`OMX.Nvidia.DOVI.decode` → "Format exceeds selected codec's capabilities"): la tele se
- * queda en negro mientras suena el audio. Igual que hace Kodi, se decodifica solo la capa base
- * HEVC Main10 (HDR10) con el decoder HEVC; la capa de mejora y el RPU se ignoran.
- * Perfiles 5 y 8 siguen yendo por el decoder DV.
- */
 @OptIn(UnstableApi::class)
 private class DolbyVisionAwareVideoRenderer(
     context: Context,
@@ -235,8 +211,6 @@ private class DolbyVisionAwareVideoRenderer(
         format: Format,
         requiresSecureDecoder: Boolean,
     ): List<MediaCodecInfo> {
-        // DV perfil 10 = AV1 con metadatos DV: la Shield no tiene AV1 por hardware (ni el decoder DV lo
-        // decodifica: pantalla negra). Sin decoders aquí → lo coge dav1d (Dav1dVideoRenderer).
         if (isDolbyVisionAv1(format)) return emptyList()
         if (isDolbyVisionProfile7(format)) {
             val hevc = MediaCodecUtil.getDecoderInfos(MimeTypes.VIDEO_H265, requiresSecureDecoder, false)
@@ -262,7 +236,6 @@ private class DolbyVisionAwareVideoRenderer(
             tunnelingAudioSessionId,
         )
         if (codecMimeType == MimeTypes.VIDEO_H265 && isDolbyVisionProfile7(format)) {
-            // Media3 pone el perfil DV en el MediaFormat; al decoder HEVC hay que darle el de la capa base.
             mediaFormat.setInteger(MediaFormat.KEY_PROFILE, AndroidProfileLevel.HEVCProfileMain10HDR10)
         }
         return mediaFormat

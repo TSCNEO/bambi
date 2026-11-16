@@ -1,7 +1,10 @@
 package com.shieldstream.tv.settings
 
 import com.shieldstream.tv.model.AppLanguage
+import com.shieldstream.tv.model.SubtitlePreference
 import com.shieldstream.tv.model.tr
+import com.shieldstream.tv.strings.Texts
+import com.shieldstream.tv.strings.R.string as StringResources
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.shieldstream.tv.domain.ApiKeysRepository
@@ -31,60 +34,93 @@ import okhttp3.Response
 import java.io.IOException
 import javax.inject.Inject
 
-/** Pasos de la guía de configuración inicial. */
 enum class SetupStep(val number: Int?) {
     WELCOME(null),
     TMDB(1),
     DEBRID(2),
     SUBDL(3),
+    PLAYBACK(4),
     DONE(null),
 }
+
+enum class SetupAudioPreference { ORIGINAL, SPANISH, SPANISH_ONLY }
+
+private data class SetupPlaybackPreferences(
+    val language: AppLanguage,
+    val spanishFirst: Boolean,
+    val spanishOnly: Boolean,
+    val subtitles: SubtitlePreference,
+    val experimentalSubtitleSync: Boolean,
+)
 
 sealed interface SetupUiState {
     data object Loading : SetupUiState
     data class Ready(
         val step: SetupStep,
         val debrid: DebridService,
-        /** Clave actual de cada servicio (null = sin configurar). */
         val keys: Map<ApiService, String?>,
-        /** Lo que respondió cada servicio al comprobar su clave (usuario, días de Premium…). */
         val details: Map<ApiService, String>,
-        /** Comprobando una clave con su servicio. */
         val checking: Boolean,
-        /** Mensaje de error del paso actual (clave no válida, sin conexión…). */
         val error: String?,
+        val audio: SetupAudioPreference,
+        val subtitles: SubtitlePreference,
+        val experimentalSubtitleSync: Boolean = true,
+        val language: AppLanguage,
     ) : SetupUiState {
+        val languageChanged: Boolean get() = language != com.shieldstream.tv.model.Lang.current
         fun has(service: ApiService) = !keys[service].isNullOrBlank()
     }
 }
 
-/**
- * Guía de configuración: la primera vez (sin claves) se abre antes del Inicio; también desde Ajustes.
- * Cada clave se comprueba con su servicio antes de guardarse (ApiKeysRepository.check), como en Ajustes.
- */
 @HiltViewModel
 class SetupViewModel @Inject constructor(
     private val apiKeys: ApiKeysRepository,
     private val settings: SettingsRepository,
+    private val texts: Texts,
     private val okHttpClient: OkHttpClient,
     private val json: Json,
     private val customCatalog: CustomCatalogRepository,
 ) : ViewModel() {
 
     private val step = MutableStateFlow(SetupStep.WELCOME)
+    private val selectedLanguage = MutableStateFlow(settings.language)
     private val details = MutableStateFlow<Map<ApiService, String>>(emptyMap())
     private val checking = MutableStateFlow(false)
     private val error = MutableStateFlow<String?>(null)
 
     private val status = combine(details, checking, error) { d, c, e -> Triple(d, c, e) }
+    private val playback = combine(
+        selectedLanguage,
+        settings.spanishFirst,
+        settings.spanishOnlySources,
+        settings.subtitlePreference,
+        settings.experimentalSubtitleSync,
+        ::SetupPlaybackPreferences,
+    )
 
     val uiState: StateFlow<SetupUiState> = combine(
         step,
         settings.debridService,
         apiKeys.keys,
         status,
-    ) { s, debrid, keys, (d, c, e) ->
-        SetupUiState.Ready(step = s, debrid = debrid, keys = keys, details = d, checking = c, error = e)
+        playback,
+    ) { s, debrid, keys, (d, c, e), preferences ->
+        SetupUiState.Ready(
+            step = s,
+            debrid = debrid,
+            keys = keys,
+            details = d,
+            checking = c,
+            error = e,
+            audio = when {
+                preferences.spanishOnly -> SetupAudioPreference.SPANISH_ONLY
+                preferences.spanishFirst -> SetupAudioPreference.SPANISH
+                else -> SetupAudioPreference.ORIGINAL
+            },
+            subtitles = preferences.subtitles,
+            experimentalSubtitleSync = preferences.experimentalSubtitleSync,
+            language = preferences.language,
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SetupUiState.Loading)
 
     fun next() {
@@ -93,7 +129,6 @@ class SetupViewModel @Inject constructor(
         error.value = null
     }
 
-    /** false = ya estaba en el primer paso (la pantalla decide si sale). */
     fun back(): Boolean {
         if (checking.value) return true
         val current = step.value
@@ -103,12 +138,9 @@ class SetupViewModel @Inject constructor(
         return true
     }
 
-    /** Cambia el idioma desde la bienvenida; la pantalla reinicia la app (vuelve a abrirse la guía). */
-    fun setLanguage(language: AppLanguage, onSaved: () -> Unit) {
-        viewModelScope.launch {
-            settings.setLanguage(language)
-            onSaved()
-        }
+    fun setLanguage(language: AppLanguage) {
+        selectedLanguage.value = language
+        viewModelScope.launch { settings.setLanguage(language) }
     }
 
     fun setDebrid(service: DebridService) {
@@ -116,11 +148,25 @@ class SetupViewModel @Inject constructor(
         viewModelScope.launch { settings.setDebridService(service) }
     }
 
-    /** Comprueba la clave con su servicio y, si vale, la guarda. */
+    fun setAudio(preference: SetupAudioPreference) {
+        viewModelScope.launch {
+            settings.setSpanishOnlySources(preference == SetupAudioPreference.SPANISH_ONLY)
+            settings.setSpanishFirst(preference != SetupAudioPreference.ORIGINAL)
+        }
+    }
+
+    fun setSubtitles(preference: SubtitlePreference) {
+        viewModelScope.launch { settings.setSubtitlePreference(preference) }
+    }
+
+    fun setExperimentalSubtitleSync(enabled: Boolean) {
+        viewModelScope.launch { settings.setExperimentalSubtitleSync(enabled) }
+    }
+
     fun submitKey(service: ApiService, input: String) {
         val key = input.trim()
         if (key.isEmpty()) {
-            error.value = tr("Escribe la clave primero (pulsa OK sobre el recuadro para abrir el teclado).", "Type the key first (press OK on the box to open the keyboard).")
+            error.value = texts.get(StringResources.setup_key_required)
             return
         }
         if (checking.value) return
@@ -130,12 +176,17 @@ class SetupViewModel @Inject constructor(
             when (val result = apiKeys.check(service, key)) {
                 is KeyCheck.Valid -> {
                     apiKeys.set(service, key)
-                    details.update { it + (service to (result.detail ?: tr("Conectado", "Connected"))) }
+                    details.update { it + (service to (result.detail ?: texts.get(StringResources.setup_connected))) }
                 }
                 is KeyCheck.Invalid -> error.value = result.message
             }
             checking.value = false
         }
+    }
+
+    fun completeAllDebridConnect() {
+        error.value = null
+        details.update { it + (ApiService.ALLDEBRID to texts.get(StringResources.setup_connected)) }
     }
 
     fun clearError() {
@@ -338,7 +389,6 @@ class SetupViewModel @Inject constructor(
     }
 }
 
-/** Decide si al arrancar hay que abrir la guía: sin clave de TMDB o sin ningún debrid configurado. */
 @HiltViewModel
 class SetupGateViewModel @Inject constructor(apiKeys: ApiKeysRepository) : ViewModel() {
     val needsSetup: Boolean = apiKeys.keys.value.let { keys ->

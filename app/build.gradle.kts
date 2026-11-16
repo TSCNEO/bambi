@@ -12,20 +12,21 @@ val localProps = Properties().apply {
     val f = rootProject.file("local.properties")
     if (f.exists()) f.inputStream().use { load(it) }
 }
-// seedKeys=false en local.properties → la app se compila SIN tus claves (APK para otra persona, o para probar la
-// guía de configuración como en una instalación nueva). Por defecto (sin la línea) se incluyen como valores iniciales.
-val seedKeys: Boolean = localProps.getProperty("seedKeys")?.trim()?.lowercase() != "false"
+// APK para publicar en GitHub: si existe .public_build con "1", se compila SIN ninguna clave ni dato privado
+// (ni las claves iniciales, ni el secreto de Trakt, ni la configuración de Ithil), pase lo que pase en local.properties.
+val publicBuild: Boolean = rootProject.file(".public_build").let { it.exists() && it.readText().trim() == "1" }
+val seedKeys: Boolean = !publicBuild && localProps.getProperty("seedKeys")?.trim()?.lowercase() == "true"
 fun seed(name: String): String = if (seedKeys) localProps.getProperty(name) ?: "" else ""
+fun privateProp(name: String): String = if (publicBuild) "" else localProps.getProperty(name)?.trim() ?: ""
 val rdToken: String = seed("rdToken")
-// API key gratuita de https://subdl.com (opcional): activa SubDL en "Subtítulos externos".
 val subdlApiKey: String = seed("subdlApiKey")
 val tmdbApiKey: String = seed("tmdbApiKey")
-// App "Bambi" registrada en Trakt (app.trakt.tv/settings/apps). No es una clave personal: identifica a la app, así
-// que va también en los APK sin claves (seedKeys=false). Desde oct-2026 Trakt solo da Client ID; el secreto es opcional.
 val traktClientId: String = localProps.getProperty("traktClientId")?.trim() ?: ""
-val traktClientSecret: String = localProps.getProperty("traktClientSecret")?.trim() ?: ""
-// La misma Redirect URI que se puso al crear la app en developer.trakt.tv (las apps "Production" exigen https).
+val traktClientSecret: String = privateProp("traktClientSecret")
 val traktRedirectUri: String = localProps.getProperty("traktRedirectUri")?.trim() ?: "urn:ietf:wg:oauth:2.0:oob"
+val ithilMetadataUrl: String = privateProp("ithilMetadataUrl")
+val ithilIndexKey: String = privateProp("ithilIndexKey")
+val ithilArchivePrefix: String = privateProp("ithilArchivePrefix")
 
 // Versión base de grodri99/bambi (el repositorio del que salen las mejoras): se enseña en Ajustes como
 // "Versión 1.1.2 · base 1.0.6". Orden: variable de entorno (CI) → etiqueta de upstream/main → fichero versionado.
@@ -43,12 +44,12 @@ fun getUpstreamVersion(): String {
     rootProject.file("upstream_version.txt").takeIf { it.exists() }
         ?.readText()?.trim()?.removePrefix("v")?.takeIf { it.isNotEmpty() }
         ?.let { return it }
-    return "1.0.6"
+    return "1.0.7"
 }
 
 android {
     namespace = "com.shieldstream.tv"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.shieldstream.tv"
@@ -63,11 +64,13 @@ android {
 
         buildConfigField("String", "RD_TOKEN", "\"$rdToken\"")
         buildConfigField("String", "SUBDL_API_KEY", "\"$subdlApiKey\"")
-        // Solo valores iniciales: en la primera ejecución se guardan cifrados y desde ahí mandan los Ajustes.
         buildConfigField("String", "TMDB_API_KEY", "\"$tmdbApiKey\"")
         buildConfigField("String", "TRAKT_CLIENT_ID", "\"$traktClientId\"")
         buildConfigField("String", "TRAKT_CLIENT_SECRET", "\"$traktClientSecret\"")
         buildConfigField("String", "TRAKT_REDIRECT_URI", "\"$traktRedirectUri\"")
+        buildConfigField("String", "ITHIL_METADATA_URL", "\"$ithilMetadataUrl\"")
+        buildConfigField("String", "ITHIL_INDEX_KEY", "\"$ithilIndexKey\"")
+        buildConfigField("String", "ITHIL_ARCHIVE_PREFIX", "\"$ithilArchivePrefix\"")
     }
 
     flavorDimensions.add("version")
@@ -100,9 +103,6 @@ android {
         jvmTarget = "17"
     }
 
-    // Firma de la release: keystore/butaca.keystore (fuera de git; el bucle la crea copiando la clave con la que
-    // ya estaba instalada la app, para actualizar sin desinstalar). ¡Haz copia de seguridad! Sin ella no se puede
-    // actualizar "Bambi" sin desinstalarla (y perder el progreso).
     signingConfigs {
         create("release") {
             val ksPath = System.getenv("KEYSTORE_PATH")
@@ -114,24 +114,33 @@ android {
     }
 
     buildTypes {
-        // "Bambi (pruebas)": se instala junto a la estable, con sus propios datos. Aquí se prueban los cambios.
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-pruebas"
             manifestPlaceholders["appLabel"] = "Bambi (pruebas)"
         }
-        // "Bambi": la de diario. Sin R8/minificar a propósito: en una app personal apenas aporta y es una
-        // fuente típica de cierres raros (reflexión de libgav1, JNI de dav1d, serialización).
         release {
             isMinifyEnabled = false
             isShrinkResources = false
             signingConfig = signingConfigs.getByName("release")
+        }
+        // Release-like performance testing without touching the stable app or enabling self-updates.
+        // Shares the debug package/data, but is non-debuggable so AGP packages the baseline profile.
+        create("benchmark") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-benchmark"
+            manifestPlaceholders["appLabel"] = "Bambi (benchmark)"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
         }
     }
 }
 
 dependencies {
     implementation(project(":core:model"))
+    implementation(project(":core:strings"))
     implementation(project(":core:domain"))
     implementation(project(":core:network"))
     implementation(project(":core:data"))
@@ -151,8 +160,10 @@ dependencies {
     implementation(libs.androidx.hilt.navigation.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.hilt.work)
+    implementation(libs.androidx.tvprovider)
     implementation(libs.coil)
-    // Decoder AV1 por software (libgav1, compilado con _setup_av1.sh). Lo usa core:media por reflexión.
     implementation(files("libs/media3-decoder-av1-1.6.0.aar"))
     // Decoder de audio por software (FFmpeg: DTS, DTS-HD, TrueHD, AC3/E-AC3…). Sin él, en TVs sin licencia
     // DTS/TrueHD (Chromecast con Google TV 4K) las pistas se marcan como no soportadas y la película queda muda.
@@ -162,4 +173,11 @@ dependencies {
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
+    ksp(libs.androidx.hilt.compiler)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.mockk)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
 }

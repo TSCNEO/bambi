@@ -1,8 +1,35 @@
 package com.shieldstream.tv.settings
 
+import com.shieldstream.tv.ui.theme.AppShapes
+
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.localizedStringResource
+import com.shieldstream.tv.strings.keyNameResource
+import com.shieldstream.tv.strings.sectionResource
+import com.shieldstream.tv.strings.titleResource
+import com.shieldstream.tv.strings.usedForResource
+import com.shieldstream.tv.strings.whereToGetResource
+import com.shieldstream.tv.strings.labelResource
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import com.shieldstream.tv.domain.SourceProvider
+import com.shieldstream.tv.domain.IthilLibraryState
 import com.shieldstream.tv.ui.component.restartApp
 import com.shieldstream.tv.model.AppLanguage
+import com.shieldstream.tv.model.AudioCodec
+import com.shieldstream.tv.model.DeviceCapabilities
+import com.shieldstream.tv.model.DeviceOptimization
+import com.shieldstream.tv.model.HdrType
+import com.shieldstream.tv.model.MemoryProfile
+import com.shieldstream.tv.model.Quality
+import com.shieldstream.tv.model.SourceExclusions
+import com.shieldstream.tv.model.SubtitleAppearance
+import com.shieldstream.tv.model.SubtitleColor
 import com.shieldstream.tv.model.tr
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -67,6 +94,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.shieldstream.tv.domain.ApiService
 import com.shieldstream.tv.domain.DebridService
+import com.shieldstream.tv.domain.SettingsRepository
 import com.shieldstream.tv.ui.component.ProvideMinimalScroll
 import com.shieldstream.tv.ui.component.TvButton
 import com.shieldstream.tv.ui.component.onBackKey
@@ -82,29 +110,29 @@ private val Green = Color(0xFF46D369)
 private val Amber = Color(0xFFF5B83D)
 private val Red = Color(0xFFFF5A5F)
 
-/**
- * Ajustes: claves de los servicios (Real-Debrid, TMDB, SubDL), búfer del reproductor y versión.
- * Nota de foco: ningún elemento cambia de tamaño al enfocarse (sin escala) y las formas se dibujan en el
- * propio fondo, sin clip: en la Shield el clip se perdía y salían esquinas cuadradas.
- */
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
     onOpenSetup: () -> Unit = {},
+    onOpenPhoneConfig: () -> Unit = {},
+    onOpenAddons: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val ready = state as? SettingsUiState.Ready
     val context = LocalContext.current
     val providers by viewModel.providers.collectAsStateWithLifecycle()
-    // Campo del relay que se está editando (null = ninguna ventana abierta).
-    // La ventana se pinta aquí, fuera de la lista: dentro de un item de LazyColumn no podría tapar la pantalla.
+    val sourceExclusions by viewModel.sourceExclusions.collectAsStateWithLifecycle()
+    val ithilState by viewModel.ithilState.collectAsStateWithLifecycle()
+    val ithilUnlocked by viewModel.ithilUnlocked.collectAsStateWithLifecycle()
+    val subtitleAppearance by viewModel.subtitleAppearance.collectAsStateWithLifecycle()
+    val matchContentFrameRate by viewModel.matchContentFrameRate.collectAsStateWithLifecycle()
+    val ithilUnlockedMessage = localizedStringResource(StringsR.string.settings_ithil_unlocked)
     var relayEditing by remember { mutableStateOf<RelayField?>(null) }
     Box(
         Modifier
             .fillMaxSize()
             .background(Background)
-            // Con la ventana de clave abierta, Atrás la cierra ella (va antes en la cadena de teclas).
             .onBackKey(enabled = ready?.editor == null && relayEditing == null) { onBack() },
     ) {
         when (val s = state) {
@@ -112,7 +140,9 @@ fun SettingsScreen(
             is SettingsUiState.Ready -> {
                 SettingsList(
                     state = s,
-                    onEditKey = viewModel::openEditor,
+                    onEditKey = { service ->
+                        if (service == ApiService.AIOSTREAMS) onOpenAddons() else viewModel.openEditor(service)
+                    },
                     onBuffer = viewModel::changeBuffer,
                     onSeekMode = viewModel::setSeekThumbnails,
                     onSoftwareAudio = viewModel::setForceSoftwareAudio,
@@ -123,7 +153,14 @@ fun SettingsScreen(
                     onRelayEdit = { relayEditing = it },
                     onRelayAllDebrid = viewModel::setEnableRelayAllDebrid,
                     onRelayRealDebrid = viewModel::setEnableRelayRealDebrid,
+                    onDeviceOptimization = viewModel::setDeviceOptimization,
+                    onExperimentalSync = viewModel::setExperimentalSubtitleSync,
+                    matchContentFrameRate = matchContentFrameRate,
+                    onMatchContentFrameRate = viewModel::setMatchContentFrameRate,
+                    subtitleAppearance = subtitleAppearance,
+                    onSubtitleAppearance = viewModel::setSubtitleAppearance,
                     onOpenSetup = onOpenSetup,
+                    onOpenPhoneConfig = onOpenPhoneConfig,
                     onLanguage = { language -> viewModel.setLanguage(language) { restartApp(context) } },
                     providers = providers,
                     onToggleProvider = viewModel::toggleProvider,
@@ -132,6 +169,23 @@ fun SettingsScreen(
                     onSyncCustomCatalog = viewModel::syncCustomCatalog,
                     getCatalogVersion = viewModel::getCatalogVersion,
                     upstreamVersion = viewModel.upstreamVersion,
+                    sourceExclusions = sourceExclusions,
+                    onToggleQuality = viewModel::toggleExcludedQuality,
+                    onToggleHdrType = viewModel::toggleExcludedHdrType,
+                    onToggleAudioCodec = viewModel::toggleExcludedAudioCodec,
+                    ithilState = ithilState,
+                    ithilUnlocked = ithilUnlocked,
+                    onDownloadIthil = viewModel::downloadIthil,
+                    onDeleteIthil = viewModel::deleteIthil,
+                    onAboutClick = {
+                        if (viewModel.onIthilUnlockTap()) {
+                            Toast.makeText(
+                                context,
+                                ithilUnlockedMessage,
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    },
                 )
                 s.editor?.let { editor ->
                     KeyEditorDialog(
@@ -139,10 +193,9 @@ fun SettingsScreen(
                         onSave = viewModel::saveKey,
                         onRemove = viewModel::removeKey,
                         onClose = viewModel::closeEditor,
+                        onAllDebridConnected = viewModel::completeAllDebridConnect,
                     )
                 }
-                // Ventana del relay: se pinta sobre la lista, nunca dentro de un item (no taparía la pantalla).
-                // El PIN no se rellena nunca: un secreto guardado no se vuelve a poner en pantalla ni en el estado guardado.
                 relayEditing?.let { field ->
                     RelayEditorDialog(
                         field = field,
@@ -174,7 +227,14 @@ private fun SettingsList(
     onRelayAllDebrid: (Boolean) -> Unit,
     onRelayRealDebrid: (Boolean) -> Unit,
     relayEditing: RelayField?,
+    onDeviceOptimization: (DeviceOptimization) -> Unit,
+    onExperimentalSync: (Boolean) -> Unit,
+    matchContentFrameRate: Boolean,
+    onMatchContentFrameRate: (Boolean) -> Unit,
+    subtitleAppearance: SubtitleAppearance,
+    onSubtitleAppearance: (SubtitleAppearance) -> Unit,
     onOpenSetup: () -> Unit,
+    onOpenPhoneConfig: () -> Unit,
     onLanguage: (AppLanguage) -> Unit,
     providers: Set<SourceProvider>,
     onToggleProvider: (SourceProvider) -> Unit,
@@ -183,15 +243,26 @@ private fun SettingsList(
     onSyncCustomCatalog: suspend () -> com.shieldstream.tv.domain.CustomCatalogRepository.SyncResult,
     getCatalogVersion: () -> String?,
     upstreamVersion: String,
+    sourceExclusions: SourceExclusions,
+    onToggleQuality: (Quality) -> Unit,
+    onToggleHdrType: (HdrType) -> Unit,
+    onToggleAudioCodec: (AudioCodec) -> Unit,
+    ithilState: IthilLibraryState,
+    ithilUnlocked: Boolean,
+    onDownloadIthil: () -> Unit,
+    onDeleteIthil: () -> Unit,
+    onAboutClick: () -> Unit,
 ) {
     val requesters = remember { ApiService.entries.associateWith { FocusRequester() } }
     val debridRequester = remember { FocusRequester() }
     val relayUrlRequester = remember { FocusRequester() }
     val relayPinRequester = remember { FocusRequester() }
-    // El foco vuelve a la tarjeta del servicio que se estaba editando (al entrar: el selector de debrid).
     var lastEdited by rememberSaveable { mutableStateOf<ApiService?>(null) }
-    // Última fila del relay editada, para devolverle el foco al cerrar su ventana.
     var lastRelayField by rememberSaveable { mutableStateOf<RelayField?>(null) }
+    var subtitleAppearanceExpanded by rememberSaveable { mutableStateOf(false) }
+    var qualityExclusionsExpanded by rememberSaveable { mutableStateOf(false) }
+    var videoExclusionsExpanded by rememberSaveable { mutableStateOf(false) }
+    var audioExclusionsExpanded by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(state.editor == null) {
         if (state.editor == null) {
             withFrameNanos { }
@@ -212,6 +283,9 @@ private fun SettingsList(
     }
     val debridUi = state.services.first { it.service == state.debrid.apiService }
     val otherServices = state.services.filter { !it.service.isDebrid }
+    val providerSections = SourceProvider.entries
+        .filter { it != SourceProvider.ITHIL || ithilUnlocked }
+        .map { it to localizedStringResource(it.sectionResource) }
     ProvideMinimalScroll(margin = 56.dp) {
         LazyColumn(
             contentPadding = PaddingValues(horizontal = 120.dp, vertical = 40.dp),
@@ -220,15 +294,15 @@ private fun SettingsList(
         ) {
             item {
                 Column(Modifier.padding(bottom = 8.dp)) {
-                    Text(tr("AJUSTES", "SETTINGS"), fontFamily = DisplayFont, fontSize = 52.sp, color = Color.White)
+                    Text(localizedStringResource(StringsR.string.settings_settings), fontFamily = DisplayFont, fontSize = 52.sp, color = Color.White)
                     Text(
-                        tr("Claves de los servicios, reproducción y versión de la app", "Service keys, playback and app version"),
+                        localizedStringResource(StringsR.string.settings_service_keys_playback_and_app_version),
                         style = MaterialTheme.typography.bodyLarge,
                         color = Muted,
                     )
                 }
             }
-            item { SectionTitle(tr("Servicio debrid", "Debrid service")) }
+            item { SectionTitle(localizedStringResource(StringsR.string.settings_debrid_service)) }
             item {
                 DebridSelectorCard(
                     active = state.debrid,
@@ -249,11 +323,9 @@ private fun SettingsList(
             item {
                 Text(
                     if (state.debrid.viaTorrentio) {
-                        tr("${state.debrid.title} funciona a través de Torrentio, como en Stremio: tu clave se envía a ", "${state.debrid.title} works through Torrentio, like in Stremio: your key is sent to ") +
-                            tr("Torrentio para que consulte la caché y pida los enlaces. Real-Debrid, en cambio, se conecta ", "Torrentio so it can check the cache and request the links. Real-Debrid, on the other hand, connects ") +
-                            tr("directamente.", "directly.")
+                        localizedStringResource(StringsR.string.settings_torrentio_debrid_explanation, state.debrid.title)
                     } else {
-                        tr("Real-Debrid se conecta directamente desde la Shield: la clave no sale de tu casa.", "Real-Debrid connects directly from the Shield: your key never leaves your home.")
+                        localizedStringResource(StringsR.string.settings_real_debrid_connects_directly_from_the_shield)
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = Muted,
@@ -278,7 +350,7 @@ private fun SettingsList(
                     pinModifier = Modifier.focusRequester(relayPinRequester),
                 )
             }
-            item { SectionTitle(tr("Otros servicios", "Other services")) }
+            item { SectionTitle(localizedStringResource(StringsR.string.settings_other_services)) }
             items(otherServices, key = { it.service.name }) { ui ->
                 ServiceCard(
                     ui = ui,
@@ -291,40 +363,253 @@ private fun SettingsList(
             }
             item {
                 Text(
-                    tr("Torrentio (fuentes), OpenSubtitles y Podnapisi (subtítulos) no necesitan clave.", "Torrentio (sources), OpenSubtitles and Podnapisi (subtitles) don't need a key."),
+                    localizedStringResource(StringsR.string.settings_torrentio_sources_opensubtitles_and_podnapisi_subtitles_don),
                     style = MaterialTheme.typography.bodyMedium,
                     color = Muted,
                     modifier = Modifier.padding(start = 4.dp, top = 2.dp),
                 )
             }
-            item { SectionTitle(tr("Buscadores de fuentes", "Source finders")) }
-            // Una tarjeta por sección (Torrentio, The Pirate Bay = todos los buscadores propios, AIOStreams).
-            items(SourceProvider.entries.distinctBy { it.section }) { p ->
-                ProviderCard(p, enabled = SourceProvider.entries.filter { it.section == p.section }.all { it in providers }, onClick = { onToggleProvider(p) })
+            item { SectionTitle(localizedStringResource(StringsR.string.settings_source_finders)) }
+            items(providerSections.distinctBy { it.second }) { (provider, section) ->
+                val enabled = providerSections.filter { it.second == section }.all { it.first in providers }
+                ProviderCard(provider, enabled = enabled, onClick = { onToggleProvider(provider) })
             }
-            item { SpanishFirstCard() }
-            item { SectionTitle(tr("Inicio", "Home")) }
-            item { HomeCategoriesCard() }
+            if (ithilUnlocked) {
+                item {
+                    IthilLibraryCard(
+                        state = ithilState,
+                        onDownload = onDownloadIthil,
+                        onDelete = onDeleteIthil,
+                    )
+                }
+            }
+            item { SectionTitle(localizedStringResource(StringsR.string.settings_source_exclusions)) }
+            item {
+                Text(
+                    localizedStringResource(StringsR.string.settings_source_exclusions_summary),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
+                    modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+                )
+            }
+            item(key = "excluded-quality-header") {
+                SourceExclusionGroupCard(
+                    title = localizedStringResource(StringsR.string.settings_quality),
+                    summary = acceptedSummary(
+                        acceptedLabels = Quality.entries.filterNot { it in sourceExclusions.qualities }.map { qualityLabel(it) },
+                        acceptsAll = sourceExclusions.qualities.isEmpty(),
+                    ),
+                    expanded = qualityExclusionsExpanded,
+                    onClick = { qualityExclusionsExpanded = !qualityExclusionsExpanded },
+                )
+            }
+            if (qualityExclusionsExpanded) {
+                items(Quality.entries, key = { "excluded-quality:${it.name}" }) { quality ->
+                    SourceExclusionCard(
+                        label = qualityLabel(quality),
+                        excluded = quality in sourceExclusions.qualities,
+                        onClick = { onToggleQuality(quality) },
+                    )
+                }
+            }
+            item(key = "excluded-hdr-header") {
+                SourceExclusionGroupCard(
+                    title = localizedStringResource(StringsR.string.settings_video_features),
+                    summary = acceptedSummary(
+                        acceptedLabels = HdrType.entries.filterNot { it in sourceExclusions.hdrTypes }.map { it.label },
+                        acceptsAll = sourceExclusions.hdrTypes.isEmpty(),
+                    ),
+                    expanded = videoExclusionsExpanded,
+                    onClick = { videoExclusionsExpanded = !videoExclusionsExpanded },
+                )
+            }
+            if (videoExclusionsExpanded) {
+                items(HdrType.entries, key = { "excluded-hdr:${it.name}" }) { hdrType ->
+                    SourceExclusionCard(
+                        label = hdrType.label,
+                        excluded = hdrType in sourceExclusions.hdrTypes,
+                        onClick = { onToggleHdrType(hdrType) },
+                    )
+                }
+            }
+            item(key = "excluded-audio-header") {
+                SourceExclusionGroupCard(
+                    title = localizedStringResource(StringsR.string.settings_audio_codecs),
+                    summary = acceptedSummary(
+                        acceptedLabels = AudioCodec.entries.filterNot { it in sourceExclusions.audioCodecs }.map { it.label },
+                        acceptsAll = sourceExclusions.audioCodecs.isEmpty(),
+                    ),
+                    expanded = audioExclusionsExpanded,
+                    onClick = { audioExclusionsExpanded = !audioExclusionsExpanded },
+                )
+            }
+            item {
+                Text(
+                    localizedStringResource(StringsR.string.settings_audio_codec_exclusions_summary),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
+                    modifier = Modifier.padding(start = 4.dp),
+                )
+            }
+            if (audioExclusionsExpanded) {
+                items(AudioCodec.entries, key = { "excluded-audio:${it.name}" }) { codec ->
+                    SourceExclusionCard(
+                        label = codec.label,
+                        excluded = codec in sourceExclusions.audioCodecs,
+                        onClick = { onToggleAudioCodec(codec) },
+                    )
+                }
+            }
+            item { SectionTitle(localizedStringResource(StringsR.string.settings_home)) }
+            item { HomeRowLimitCard() }
+            item { LightweightModeCard() }
+            item { IntroAlwaysCard() }
+            item { SoftBackdropsCard() }
+            item { HighResBackdropsCard() }
             item { SectionTitle("Idioma · Language") }
             item { LanguageCard(current = state.language, onApply = onLanguage) }
-            item { SectionTitle(tr("Reproducción", "Playback")) }
-            item { SeekModeCard(thumbnails = state.seekThumbnails, onChange = onSeekMode) }
+            item { SectionTitle(localizedStringResource(StringsR.string.settings_playback)) }
             item { AutoFrameRateCard(enabled = state.autoFrameRate, onChange = onAutoFrameRate) }
             item { SoftwareAudioCard(enabled = state.forceSoftwareAudio, onChange = onSoftwareAudio) }
             item { ExternalPlayerCard(enabled = state.useExternalPlayer, onChange = onExternalPlayer) }
-            item { AutoNextCard() }
-            item { BufferCard(seconds = state.bufferSeconds, onChange = onBuffer) }
-            item { SectionTitle(tr("Acerca de", "About")) }
+            item { ExperimentalSyncCard(enabled = state.experimentalSubtitleSync, onChange = onExperimentalSync) }
             item {
-                AboutCard(
+                SubtitleAppearanceHeaderCard(
+                    appearance = subtitleAppearance,
+                    expanded = subtitleAppearanceExpanded,
+                    onClick = { subtitleAppearanceExpanded = !subtitleAppearanceExpanded },
+                )
+            }
+            if (subtitleAppearanceExpanded) {
+            item {
+                SubtitleAppearanceCard(
+                    title = localizedStringResource(StringsR.string.subtitle_size),
+                    value = localizedStringResource(StringsR.string.subtitle_size_value, subtitleAppearance.sizePercent),
+                    onShift = { delta ->
+                        onSubtitleAppearance(
+                            subtitleAppearance.copy(
+                                sizePercent = (subtitleAppearance.sizePercent + delta * SubtitleAppearance.SIZE_STEP)
+                                    .coerceIn(SubtitleAppearance.MIN_SIZE, SubtitleAppearance.MAX_SIZE),
+                            ),
+                        )
+                    },
+                )
+            }
+            item {
+                SubtitleAppearanceCard(
+                    title = localizedStringResource(StringsR.string.subtitle_position),
+                    value = localizedStringResource(
+                        StringsR.string.subtitle_position_value,
+                        subtitleAppearance.verticalPositionPercent,
+                    ),
+                    onShift = { delta ->
+                        onSubtitleAppearance(
+                            subtitleAppearance.copy(
+                                verticalPositionPercent = (
+                                    subtitleAppearance.verticalPositionPercent + delta * SubtitleAppearance.POSITION_STEP
+                                ).coerceIn(SubtitleAppearance.MIN_POSITION, SubtitleAppearance.MAX_POSITION),
+                            ),
+                        )
+                    },
+                )
+            }
+            item {
+                SubtitleAppearanceCard(
+                    title = localizedStringResource(StringsR.string.subtitle_text_color),
+                    value = localizedStringResource(subtitleAppearance.textColor.labelResource),
+                    swatch = subtitleAppearance.textColor,
+                    onShift = { delta ->
+                        onSubtitleAppearance(
+                            subtitleAppearance.copy(
+                                textColor = subtitleAppearance.textColor.shift(SubtitleAppearance.textColors, delta),
+                            ),
+                        )
+                    },
+                )
+            }
+            item {
+                SubtitleAppearanceCard(
+                    title = localizedStringResource(StringsR.string.subtitle_background_color),
+                    value = localizedStringResource(subtitleAppearance.backgroundColor.labelResource),
+                    swatch = subtitleAppearance.backgroundColor,
+                    onShift = { delta ->
+                        onSubtitleAppearance(
+                            subtitleAppearance.copy(
+                                backgroundColor = subtitleAppearance.backgroundColor.shift(
+                                    SubtitleAppearance.backgroundColors,
+                                    delta,
+                                ),
+                            ),
+                        )
+                    },
+                )
+            }
+            item {
+                SubtitleAppearanceCard(
+                    title = localizedStringResource(StringsR.string.subtitle_outline_color),
+                    value = localizedStringResource(subtitleAppearance.outlineColor.labelResource),
+                    swatch = subtitleAppearance.outlineColor,
+                    onShift = { delta ->
+                        onSubtitleAppearance(
+                            subtitleAppearance.copy(
+                                outlineColor = subtitleAppearance.outlineColor.shift(SubtitleAppearance.outlineColors, delta),
+                            ),
+                        )
+                    },
+                )
+            }
+            item {
+                SubtitleAppearanceCard(
+                    title = localizedStringResource(StringsR.string.subtitle_embedded_style),
+                    value = localizedStringResource(
+                        if (subtitleAppearance.applyEmbeddedStyles) StringsR.string.subtitle_style_original
+                        else StringsR.string.subtitle_style_custom
+                    ),
+                    onShift = {
+                        onSubtitleAppearance(
+                            subtitleAppearance.copy(applyEmbeddedStyles = !subtitleAppearance.applyEmbeddedStyles),
+                        )
+                    },
+                )
+            }
+            }
+            item {
+                DeviceOptimizationCard(
+                    optimization = state.optimization,
+                    capabilities = state.capabilities,
+                    memoryProfile = state.memoryProfile,
+                    onChange = onDeviceOptimization,
+                )
+            }
+            item {
+                SeekModeCard(
+                    thumbnails = state.seekThumbnails,
+                    enabled = state.optimization == DeviceOptimization.CUSTOM,
+                    onChange = onSeekMode,
+                )
+            }
+            item { AutoNextCard() }
+            item { EpisodeNotificationsCard() }
+            item {
+                BufferCard(
+                    seconds = state.bufferSeconds,
+                    enabled = state.optimization == DeviceOptimization.CUSTOM,
+                    onChange = onBuffer,
+                )
+            }
+            item { SectionTitle(localizedStringResource(StringsR.string.settings_about)) }
+            item {
+                ForkAboutCard(
                     onPair = onPairCustomCatalog,
                     isActivated = isCustomCatalogActivated,
                     onSync = onSyncCustomCatalog,
                     getCatalogVersion = getCatalogVersion,
                     upstreamVersion = upstreamVersion,
+                    onAboutClick = onAboutClick,
                 )
             }
             item { UpdateCard() }
+            item { PhoneConfigCard(onClick = onOpenPhoneConfig) }
             item { SetupGuideCard(onClick = onOpenSetup) }
         }
     }
@@ -341,9 +626,8 @@ private fun SectionTitle(text: String) {
     )
 }
 
-/** Tarjeta enfocable común: fondo y borde con forma (sin clip ni escala). */
 @Composable
-private fun FocusCard(
+internal fun FocusCard(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
     content: @Composable (focused: Boolean) -> Unit,
@@ -367,48 +651,125 @@ private fun FocusCard(
 }
 
 @Composable
-private fun ServiceCard(ui: ServiceUi, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    FocusCard(modifier = modifier, onClick = onClick) { focused ->
+private fun SubtitleAppearanceHeaderCard(
+    appearance: SubtitleAppearance,
+    expanded: Boolean,
+    onClick: () -> Unit,
+) {
+    FocusCard(onClick = onClick) { focused ->
         Row(verticalAlignment = Alignment.CenterVertically) {
-            ServiceLogo(ui.service)
-            Spacer(Modifier.width(20.dp))
             Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        ui.service.title,
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                        color = Color.White,
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        when {
-                            ui.service.isDebrid -> tr("En uso", "In use")
-                            ui.service.required -> tr("Necesaria", "Required")
-                            else -> tr("Opcional", "Optional")
-                        },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Muted,
-                    )
-                }
-                Text(ui.service.usedFor, style = MaterialTheme.typography.bodyMedium, color = Muted)
-                Spacer(Modifier.height(6.dp))
                 Text(
-                    ui.maskedKey ?: tr("Sin clave", "No key"),
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 14.sp,
-                    color = Color.White.copy(alpha = 0.45f),
+                    text = localizedStringResource(StringsR.string.subtitle_appearance),
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                )
+                Text(
+                    text = localizedStringResource(StringsR.string.subtitle_size_value, appearance.sizePercent) +
+                        " · " + localizedStringResource(appearance.textColor.labelResource),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
                 )
             }
-            Spacer(Modifier.width(16.dp))
-            Column(horizontalAlignment = Alignment.End) {
-                StatusPill(ui.status)
-                Spacer(Modifier.height(8.dp))
+            Text(
+                text = if (expanded) "▾" else "▸",
+                style = MaterialTheme.typography.headlineSmall,
+                color = if (focused) Color.White else Muted,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SubtitleAppearanceCard(
+    title: String,
+    value: String,
+    swatch: SubtitleColor? = null,
+    onShift: (Int) -> Unit,
+) {
+    FocusCard(
+        onClick = { onShift(1) },
+        modifier = Modifier.onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when (event.key) {
+                Key.DirectionLeft -> { onShift(-1); true }
+                Key.DirectionRight -> { onShift(1); true }
+                else -> false
+            }
+        },
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                color = Color.White,
+                modifier = Modifier.weight(1f),
+            )
+            if (swatch != null) {
+                Box(Modifier.size(20.dp).background(Color(swatch.argb), CircleShape))
+                Spacer(Modifier.width(12.dp))
+            }
+            Arrow("◀", enabled = it)
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleLarge,
+                color = Color.White,
+                modifier = Modifier.padding(horizontal = 18.dp),
+            )
+            Arrow("▶", enabled = it)
+        }
+    }
+}
+
+private fun SubtitleColor.shift(colors: List<SubtitleColor>, delta: Int): SubtitleColor {
+    val index = colors.indexOf(this).coerceAtLeast(0)
+    return colors[(index + delta + colors.size) % colors.size]
+}
+
+@Composable
+internal fun ServiceCard(ui: ServiceUi, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    FocusCard(modifier = modifier, onClick = onClick) { focused ->
+        Column(Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ServiceLogo(ui.service)
+                Spacer(Modifier.width(20.dp))
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            localizedStringResource(ui.service.titleResource),
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            when {
+                                ui.service.isDebrid -> localizedStringResource(StringsR.string.settings_in_use)
+                                ui.service.required -> localizedStringResource(StringsR.string.settings_required)
+                                else -> localizedStringResource(StringsR.string.settings_optional)
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Muted,
+                        )
+                    }
+                    Text(localizedStringResource(ui.service.usedForResource), style = MaterialTheme.typography.bodyMedium, color = Muted)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        ui.maskedKey ?: localizedStringResource(StringsR.string.settings_no_key),
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 14.sp,
+                        color = Color.White.copy(alpha = 0.45f),
+                    )
+                }
+                Spacer(Modifier.width(16.dp))
                 Text(
-                    if (ui.maskedKey == null) tr("OK para añadir ›", "OK to add ›") else tr("OK para cambiar ›", "OK to change ›"),
+                    if (ui.status == ServiceStatus.Missing) localizedStringResource(StringsR.string.settings_ok_to_add) else localizedStringResource(StringsR.string.settings_ok_to_change),
                     style = MaterialTheme.typography.labelLarge,
                     color = if (focused) Color.White else Color.Transparent,
                 )
             }
+            // Status messages can be long: give them their own row so they cannot squeeze the provider details.
+            Spacer(Modifier.height(12.dp))
+            StatusPill(ui.status)
         }
     }
 }
@@ -437,9 +798,9 @@ private fun ServiceLogo(service: ApiService) {
 @Composable
 private fun StatusPill(status: ServiceStatus) {
     val (color, text) = when (status) {
-        ServiceStatus.Missing -> Amber to tr("Sin configurar", "Not set up")
-        ServiceStatus.Checking -> Muted to tr("Comprobando…", "Checking…")
-        is ServiceStatus.Ok -> Green to (status.detail ?: tr("Conectado", "Connected"))
+        ServiceStatus.Missing -> Amber to localizedStringResource(StringsR.string.settings_not_set_up)
+        ServiceStatus.Checking -> Muted to localizedStringResource(StringsR.string.settings_checking)
+        is ServiceStatus.Ok -> Green to (status.detail ?: localizedStringResource(StringsR.string.settings_connected))
         is ServiceStatus.Bad -> Red to status.message
     }
     Row(
@@ -454,32 +815,54 @@ private fun StatusPill(status: ServiceStatus) {
             text,
             style = MaterialTheme.typography.labelLarge,
             color = color,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(end = 2.dp),
+            modifier = Modifier.weight(1f, fill = false).padding(end = 2.dp),
         )
     }
 }
 
-/** Vuelve a abrir la guía de configuración inicial (paso a paso, con QR). */
+@Composable
+private fun PhoneConfigCard(onClick: () -> Unit) {
+    FocusCard(onClick = onClick) { focused ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    localizedStringResource(StringsR.string.settings_configure_from_phone),
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                )
+                Text(
+                    localizedStringResource(StringsR.string.settings_phone_config_card_body),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
+                )
+            }
+            Text(
+                localizedStringResource(StringsR.string.settings_ok_to_open),
+                style = MaterialTheme.typography.labelLarge,
+                color = if (focused) Color.White else Color.Transparent,
+            )
+        }
+    }
+}
+
 @Composable
 private fun SetupGuideCard(onClick: () -> Unit) {
     FocusCard(onClick = onClick) { focused ->
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    tr("Guía de configuración", "Setup guide"),
+                    localizedStringResource(StringsR.string.settings_setup_guide),
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                     color = Color.White,
                 )
                 Text(
-                    tr("Repite paso a paso la configuración del primer arranque (catálogo, debrid y subtítulos).", "Repeat the first-run setup step by step (catalog, debrid and subtitles)."),
+                    localizedStringResource(StringsR.string.settings_repeat_the_first_run_setup_step_by),
                     style = MaterialTheme.typography.bodyMedium,
                     color = Muted,
                 )
             }
             Text(
-                tr("OK para abrir ›", "OK to open ›"),
+                localizedStringResource(StringsR.string.settings_ok_to_open),
                 style = MaterialTheme.typography.labelLarge,
                 color = if (focused) Color.White else Color.Transparent,
             )
@@ -506,12 +889,12 @@ internal fun DebridSelectorCard(active: DebridService, onChange: (DebridService)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    tr("Servicio en uso", "Service in use"),
+                    localizedStringResource(StringsR.string.settings_service_in_use),
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                     color = Color.White,
                 )
                 Text(
-                    if (active.viaTorrentio) tr("Fuentes y enlaces a través de Torrentio.", "Sources and links through Torrentio.") else tr("Conexión directa con Real-Debrid.", "Direct connection to Real-Debrid."),
+                    if (active.viaTorrentio) localizedStringResource(StringsR.string.settings_sources_and_links_through_torrentio) else localizedStringResource(StringsR.string.settings_direct_connection_to_real_debrid),
                     style = MaterialTheme.typography.bodyMedium,
                     color = Muted,
                 )
@@ -547,23 +930,70 @@ internal fun DebridSelectorCard(active: DebridService, onChange: (DebridService)
     }
 }
 
-/**
- * Cómo funcionan ◀▶ en el reproductor. OK alterna; ◀ elige "Miniaturas" y ▶ "Saltos de 10 s".
- */
-/**
- * "Castellano primero": en Fuentes y al pulsar Reproducir, las releases con audio en español van delante (tras las
- * que están en caché). Se detecta por la bandera de Torrentio o por el nombre (SPANISH, CASTELLANO, DUAL…).
- */
 @Composable
-private fun SpanishFirstCard(viewModel: SettingsViewModel = hiltViewModel()) {
-    val enabled by viewModel.spanishFirst.collectAsStateWithLifecycle()
+private fun HomeRowLimitCard(viewModel: SettingsViewModel = hiltViewModel()) {
+    val limit by viewModel.homeRowItemLimit.collectAsStateWithLifecycle()
     FocusCard(
-        onClick = { viewModel.setSpanishFirst(!enabled) },
+        onClick = { viewModel.changeHomeRowItemLimit(SettingsRepository.HOME_ROW_ITEM_LIMIT_STEP) },
         modifier = Modifier.onPreviewKeyEvent { event ->
             if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
             when (event.key) {
-                Key.DirectionLeft -> { viewModel.setSpanishFirst(true); true }
-                Key.DirectionRight -> { viewModel.setSpanishFirst(false); true }
+                Key.DirectionLeft -> {
+                    if (limit > SettingsRepository.MIN_HOME_ROW_ITEM_LIMIT) {
+                        viewModel.changeHomeRowItemLimit(-SettingsRepository.HOME_ROW_ITEM_LIMIT_STEP)
+                    }
+                    true
+                }
+                Key.DirectionRight -> {
+                    if (limit < SettingsRepository.MAX_HOME_ROW_ITEM_LIMIT) {
+                        viewModel.changeHomeRowItemLimit(SettingsRepository.HOME_ROW_ITEM_LIMIT_STEP)
+                    }
+                    true
+                }
+                else -> false
+            }
+        },
+    ) { focused ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    localizedStringResource(StringsR.string.settings_items_per_home_row),
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                )
+                Text(
+                    localizedStringResource(StringsR.string.settings_items_per_home_row_explanation),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
+                )
+            }
+            Spacer(Modifier.width(24.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Arrow("◀", enabled = focused && limit > SettingsRepository.MIN_HOME_ROW_ITEM_LIMIT)
+                Text(
+                    "$limit",
+                    fontFamily = DisplayFont,
+                    fontSize = 34.sp,
+                    color = Color.White,
+                    modifier = Modifier.padding(horizontal = 18.dp),
+                )
+                Arrow("▶", enabled = focused && limit < SettingsRepository.MAX_HOME_ROW_ITEM_LIMIT)
+            }
+        }
+    }
+}
+
+/** Reduce image decoding, background changes and focus animations on low-power TV boxes. */
+@Composable
+private fun LightweightModeCard(viewModel: SettingsViewModel = hiltViewModel()) {
+    val enabled by viewModel.lightweightUi.collectAsStateWithLifecycle()
+    FocusCard(
+        onClick = { viewModel.setLightweightUi(!enabled) },
+        modifier = Modifier.onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when (event.key) {
+                Key.DirectionLeft -> { viewModel.setLightweightUi(true); true }
+                Key.DirectionRight -> { viewModel.setLightweightUi(false); true }
                 else -> false
             }
         },
@@ -571,15 +1001,12 @@ private fun SpanishFirstCard(viewModel: SettingsViewModel = hiltViewModel()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    tr("Castellano primero", "Spanish audio first"),
+                    localizedStringResource(StringsR.string.settings_lightweight_ui),
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                     color = Color.White,
                 )
                 Text(
-                    tr(
-                        "Las fuentes con audio en español van delante (también al pulsar Reproducir). Se reconocen por la bandera o por el nombre: SPANISH, CASTELLANO, DUAL…",
-                        "Sources with Spanish audio go first (also when you press Play). Detected by flag or name: SPANISH, CASTELLANO, DUAL…",
-                    ),
+                    localizedStringResource(StringsR.string.settings_smaller_backdrops_no_automatic_rotation_or_focus),
                     style = MaterialTheme.typography.bodyMedium,
                     color = Muted,
                 )
@@ -590,14 +1017,89 @@ private fun SpanishFirstCard(viewModel: SettingsViewModel = hiltViewModel()) {
                     .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(50))
                     .padding(4.dp),
             ) {
-                SegmentOption(tr("Sí", "On"), selected = enabled)
-                SegmentOption(tr("No", "Off"), selected = !enabled)
+                SegmentOption(localizedStringResource(StringsR.string.settings_on), selected = enabled)
+                SegmentOption(localizedStringResource(StringsR.string.settings_off_9847b4), selected = !enabled)
             }
         }
     }
 }
 
-/** Series: "Siguiente episodio" en los créditos y paso automático al terminar. ◀ = Sí, ▶ = No, OK cambia. */
+/** Blur the backdrop behind Home rows so the cards stand out. */
+@Composable
+private fun SoftBackdropsCard(viewModel: SettingsViewModel = hiltViewModel()) {
+    val enabled by viewModel.softBackdrops.collectAsStateWithLifecycle()
+    OnOffCard(
+        title = localizedStringResource(StringsR.string.settings_soft_backdrops),
+        summary = localizedStringResource(StringsR.string.settings_soft_backdrops_summary),
+        enabled = enabled,
+        onChange = viewModel::setSoftBackdrops,
+    )
+}
+
+/** Intro de Bambi: siempre al abrir, o solo cuando hace falta (arranque o Inicio por recargar). */
+@Composable
+private fun IntroAlwaysCard(viewModel: SettingsViewModel = hiltViewModel()) {
+    val enabled by viewModel.introAlways.collectAsStateWithLifecycle()
+    OnOffCard(
+        title = localizedStringResource(StringsR.string.settings_intro_always),
+        summary = localizedStringResource(StringsR.string.settings_intro_always_summary),
+        enabled = enabled,
+        onChange = viewModel::setIntroAlways,
+    )
+}
+
+/** Load the featured carousel and sharp Home backdrops at TMDB's original size. */
+@Composable
+private fun HighResBackdropsCard(viewModel: SettingsViewModel = hiltViewModel()) {
+    val enabled by viewModel.highResBackdrops.collectAsStateWithLifecycle()
+    OnOffCard(
+        title = localizedStringResource(StringsR.string.settings_high_res_backdrops),
+        summary = localizedStringResource(StringsR.string.settings_high_res_backdrops_summary),
+        enabled = enabled,
+        onChange = viewModel::setHighResBackdrops,
+    )
+}
+
+/** On/Off setting row: OK toggles, Left selects On, Right selects Off. */
+@Composable
+private fun OnOffCard(title: String, summary: String, enabled: Boolean, onChange: (Boolean) -> Unit) {
+    FocusCard(
+        onClick = { onChange(!enabled) },
+        modifier = Modifier.onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when (event.key) {
+                Key.DirectionLeft -> { onChange(true); true }
+                Key.DirectionRight -> { onChange(false); true }
+                else -> false
+            }
+        },
+    ) { _ ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                )
+                Text(
+                    summary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
+                )
+            }
+            Spacer(Modifier.width(24.dp))
+            Row(
+                Modifier
+                    .background(Color.White.copy(alpha = 0.08f), AppShapes.Pill)
+                    .padding(4.dp),
+            ) {
+                SegmentOption(localizedStringResource(StringsR.string.settings_on), selected = enabled)
+                SegmentOption(localizedStringResource(StringsR.string.settings_off_9847b4), selected = !enabled)
+            }
+        }
+    }
+}
+
 @Composable
 private fun AutoNextCard(viewModel: SettingsViewModel = hiltViewModel()) {
     val enabled by viewModel.autoNextEpisode.collectAsStateWithLifecycle()
@@ -615,15 +1117,12 @@ private fun AutoNextCard(viewModel: SettingsViewModel = hiltViewModel()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    tr("Siguiente episodio automático", "Autoplay next episode"),
+                    localizedStringResource(StringsR.string.settings_autoplay_next_episode),
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                     color = Color.White,
                 )
                 Text(
-                    tr(
-                        "Series: en los créditos sale \"Siguiente episodio\" (OK lo pone ya) y, al terminar el episodio, empieza el siguiente.",
-                        "Shows: during the credits \"Next episode\" appears (OK plays it now) and, when the episode ends, the next one starts.",
-                    ),
+                    localizedStringResource(StringsR.string.settings_shows_during_the_credits_next_episode_appears),
                     style = MaterialTheme.typography.bodyMedium,
                     color = Muted,
                 )
@@ -634,15 +1133,62 @@ private fun AutoNextCard(viewModel: SettingsViewModel = hiltViewModel()) {
                     .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(50))
                     .padding(4.dp),
             ) {
-                SegmentOption(tr("Sí", "On"), selected = enabled)
-                SegmentOption(tr("No", "Off"), selected = !enabled)
+                SegmentOption(localizedStringResource(StringsR.string.settings_on), selected = enabled)
+                SegmentOption(localizedStringResource(StringsR.string.settings_off_9847b4), selected = !enabled)
             }
         }
     }
 }
 
 @Composable
-private fun AutoFrameRateCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
+private fun EpisodeNotificationsCard(viewModel: SettingsViewModel = hiltViewModel()) {
+    val enabled by viewModel.episodeNotifications.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) viewModel.setEpisodeNotifications(true)
+    }
+    fun enable() {
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            permission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            viewModel.setEpisodeNotifications(true)
+        }
+    }
+    FocusCard(
+        onClick = { if (enabled) viewModel.setEpisodeNotifications(false) else enable() },
+        modifier = Modifier.onPreviewKeyEvent { event ->
+            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when (event.key) {
+                Key.DirectionLeft -> { enable(); true }
+                Key.DirectionRight -> { viewModel.setEpisodeNotifications(false); true }
+                else -> false
+            }
+        },
+    ) { _ ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    localizedStringResource(StringsR.string.settings_new_episode_notifications),
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                )
+                Text(
+                    localizedStringResource(StringsR.string.settings_followed_shows_only_checks_for_releases_every),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
+                )
+            }
+            Spacer(Modifier.width(24.dp))
+            Row(Modifier.background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(50)).padding(4.dp)) {
+                SegmentOption(localizedStringResource(StringsR.string.settings_on), selected = enabled)
+                SegmentOption(localizedStringResource(StringsR.string.settings_off_9847b4), selected = !enabled)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MatchContentFrameRateCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
     FocusCard(
         onClick = { onChange(!enabled) },
         modifier = Modifier.onPreviewKeyEvent { event ->
@@ -657,15 +1203,12 @@ private fun AutoFrameRateCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    tr("Ajuste automático de frecuencia (AFR)", "Auto frame rate matching (AFR)"),
+                    localizedStringResource(StringsR.string.settings_match_content_frame_rate),
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                     color = Color.White,
                 )
                 Text(
-                    tr(
-                        "Cambia la tasa de refresco del televisor (24p, 50p, 60p) según los fotogramas del vídeo para eliminar tirones (judder).",
-                        "Switches TV refresh rate (24p, 50p, 60p) to match video frame rate and eliminate judder.",
-                    ),
+                    localizedStringResource(StringsR.string.settings_match_content_frame_rate_explanation),
                     style = MaterialTheme.typography.bodyMedium,
                     color = Muted,
                 )
@@ -676,15 +1219,15 @@ private fun AutoFrameRateCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
                     .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(50))
                     .padding(4.dp),
             ) {
-                SegmentOption(tr("Sí", "On"), selected = enabled)
-                SegmentOption(tr("No", "Off"), selected = !enabled)
+                SegmentOption(localizedStringResource(StringsR.string.settings_on), selected = enabled)
+                SegmentOption(localizedStringResource(StringsR.string.settings_off_9847b4), selected = !enabled)
             }
         }
     }
 }
 
 @Composable
-private fun SoftwareAudioCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
+private fun ExperimentalSyncCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
     FocusCard(
         onClick = { onChange(!enabled) },
         modifier = Modifier.onPreviewKeyEvent { event ->
@@ -699,15 +1242,12 @@ private fun SoftwareAudioCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    tr("Forzar audio por software (PCM)", "Force software audio (PCM)"),
+                    localizedStringResource(StringsR.string.settings_experimental_subtitle_sync),
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                     color = Color.White,
                 )
                 Text(
-                    tr(
-                        "Decodifica E-AC-3, DTS y TrueHD en la CPU a PCM estéreo/multicanal. Soluciona el silencio en barras o TVs que no soportan bitstream HDMI.",
-                        "Decodes E-AC-3, DTS and TrueHD on CPU to PCM stereo/multichannel. Fixes silence on soundbars or TVs without HDMI bitstream support.",
-                    ),
+                    localizedStringResource(StringsR.string.settings_sync_demux_explanation),
                     style = MaterialTheme.typography.bodyMedium,
                     color = Muted,
                 )
@@ -718,22 +1258,29 @@ private fun SoftwareAudioCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
                     .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(50))
                     .padding(4.dp),
             ) {
-                SegmentOption(tr("Sí", "On"), selected = enabled)
-                SegmentOption(tr("No", "Off"), selected = !enabled)
+                SegmentOption(localizedStringResource(StringsR.string.settings_on), selected = enabled)
+                SegmentOption(localizedStringResource(StringsR.string.settings_off_9847b4), selected = !enabled)
             }
         }
     }
 }
 
 @Composable
-private fun ExternalPlayerCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
+private fun DeviceOptimizationCard(
+    optimization: DeviceOptimization,
+    capabilities: DeviceCapabilities,
+    memoryProfile: MemoryProfile,
+    onChange: (DeviceOptimization) -> Unit,
+) {
     FocusCard(
-        onClick = { onChange(!enabled) },
+        onClick = {
+            onChange(if (optimization == DeviceOptimization.AUTOMATIC) DeviceOptimization.CUSTOM else DeviceOptimization.AUTOMATIC)
+        },
         modifier = Modifier.onPreviewKeyEvent { event ->
             if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
             when (event.key) {
-                Key.DirectionLeft -> { onChange(true); true }
-                Key.DirectionRight -> { onChange(false); true }
+                Key.DirectionLeft -> { onChange(DeviceOptimization.AUTOMATIC); true }
+                Key.DirectionRight -> { onChange(DeviceOptimization.CUSTOM); true }
                 else -> false
             }
         },
@@ -741,56 +1288,79 @@ private fun ExternalPlayerCard(enabled: Boolean, onChange: (Boolean) -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    tr("Reproductor externo por defecto", "Default external player"),
+                    localizedStringResource(StringsR.string.settings_device_optimization),
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                     color = Color.White,
                 )
                 Text(
-                    tr(
-                        "Abre automáticamente el vídeo en Just Player, VLC u otro reproductor externo instalado al pulsar Reproducir.",
-                        "Automatically opens the video in Just Player, VLC or another installed external player when you press Play.",
-                    ),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Muted,
-                )
-            }
-            Spacer(Modifier.width(24.dp))
-            Row(
-                Modifier
-                    .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(50))
-                    .padding(4.dp),
-            ) {
-                SegmentOption(tr("Sí", "On"), selected = enabled)
-                SegmentOption(tr("No", "Off"), selected = !enabled)
-            }
-        }
-    }
-}
-@Composable
-private fun SeekModeCard(thumbnails: Boolean, onChange: (Boolean) -> Unit) {
-    FocusCard(
-        onClick = { onChange(!thumbnails) },
-        modifier = Modifier.onPreviewKeyEvent { event ->
-            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-            when (event.key) {
-                Key.DirectionLeft -> { onChange(true); true }
-                Key.DirectionRight -> { onChange(false); true }
-                else -> false
-            }
-        },
-    ) { _ ->
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    tr("Búsqueda en el reproductor", "Seeking in the player"),
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White,
-                )
-                Text(
-                    if (thumbnails) {
-                        tr("◀ ▶ pausan y muestran miniaturas del punto elegido; OK salta ahí y Atrás vuelve.", "◀ ▶ pause and show thumbnails of the chosen point; OK jumps there and Back returns.")
+                    if (optimization == DeviceOptimization.AUTOMATIC) {
+                        localizedStringResource(StringsR.string.settings_bambi_adapts_memory_buffering_thumbnails_and_sources)
                     } else {
-                        tr("◀ ▶ adelantan o retroceden 10 s al momento, sin pausar.", "◀ ▶ skip forward or back 10 s instantly, without pausing.")
+                        localizedStringResource(StringsR.string.settings_uses_your_manual_settings_and_shield_compatible)
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
+                )
+                val codecs = capabilities.hardwareVideoCodecs
+                    .sortedBy { it.ordinal }
+                    .joinToString(" · ") { it.label }
+                    .ifBlank { localizedStringResource(StringsR.string.settings_none_detected) }
+                val hdr = capabilities.supportedHdr
+                    .sortedBy { it.rank }
+                    .joinToString(" · ") { it.label }
+                    .ifBlank { localizedStringResource(StringsR.string.settings_no_hdr_detected) }
+                val memory = when {
+                    optimization == DeviceOptimization.AUTOMATIC && memoryProfile == MemoryProfile.CONSTRAINED ->
+                        " · " + localizedStringResource(StringsR.string.settings_constrained_memory)
+                    else -> ""
+                }
+                Text(
+                    "${capabilities.model} · ${capabilities.heapLimitBytes / (1024 * 1024)} MB$memory\n$codecs\n$hdr",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.45f),
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+            Spacer(Modifier.width(24.dp))
+            Row(
+                Modifier
+                    .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(50))
+                    .padding(4.dp),
+            ) {
+                SegmentOption(localizedStringResource(StringsR.string.settings_automatic), selected = optimization == DeviceOptimization.AUTOMATIC)
+                SegmentOption(localizedStringResource(StringsR.string.settings_custom), selected = optimization == DeviceOptimization.CUSTOM)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SeekModeCard(thumbnails: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
+    FocusCard(
+        onClick = { if (enabled) onChange(!thumbnails) },
+        modifier = Modifier.onPreviewKeyEvent { event ->
+            if (!enabled || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            when (event.key) {
+                Key.DirectionLeft -> { onChange(true); true }
+                Key.DirectionRight -> { onChange(false); true }
+                else -> false
+            }
+        },
+    ) { _ ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    localizedStringResource(StringsR.string.settings_seeking_in_the_player),
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                )
+                Text(
+                    if (!enabled) {
+                        localizedStringResource(StringsR.string.settings_chosen_automatically_for_this_device)
+                    } else if (thumbnails) {
+                        localizedStringResource(StringsR.string.settings_pause_and_show_thumbnails_of_the_chosen)
+                    } else {
+                        localizedStringResource(StringsR.string.settings_skip_forward_or_back_10_s_instantly)
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = Muted,
@@ -802,18 +1372,13 @@ private fun SeekModeCard(thumbnails: Boolean, onChange: (Boolean) -> Unit) {
                     .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(50))
                     .padding(4.dp),
             ) {
-                SegmentOption(tr("Miniaturas", "Thumbnails"), selected = thumbnails)
-                SegmentOption(tr("Saltos de 10 s", "10 s skips"), selected = !thumbnails)
+                SegmentOption(localizedStringResource(StringsR.string.settings_thumbnails), selected = thumbnails)
+                SegmentOption(localizedStringResource(StringsR.string.settings_10_s_skips), selected = !thumbnails)
             }
         }
     }
 }
 
-/**
- * Idioma de la app. ◀ ▶ eligen y OK aplica: se guarda y la app se reinicia, así todos los textos (y TMDB, el
- * audio preferido, las edades…) salen ya en el idioma nuevo. El título va en los dos idiomas para que se encuentre
- * aunque no se entienda el actual. Si el foco sale de la tarjeta sin pulsar OK, no cambia nada.
- */
 @Composable
 private fun LanguageCard(current: AppLanguage, onApply: (AppLanguage) -> Unit) {
     var pending by remember(current) { mutableStateOf(current) }
@@ -833,7 +1398,7 @@ private fun LanguageCard(current: AppLanguage, onApply: (AppLanguage) -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    tr("Idioma de la app", "App language"),
+                    localizedStringResource(StringsR.string.settings_app_language),
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                     color = Color.White,
                 )
@@ -841,7 +1406,7 @@ private fun LanguageCard(current: AppLanguage, onApply: (AppLanguage) -> Unit) {
                     if (changing) {
                         if (pending == AppLanguage.EN) "OK to switch to English: the app will restart." else "OK para cambiar a español: la app se reiniciará."
                     } else {
-                        tr("Menús, títulos y sinopsis, y audio preferido. ◀ ▶ para elegir.", "Menus, titles and synopses, and preferred audio. ◀ ▶ to choose.")
+                        localizedStringResource(StringsR.string.settings_menus_titles_and_synopses_and_preferred_audio)
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (changing) Amber else Muted,
@@ -859,36 +1424,100 @@ private fun LanguageCard(current: AppLanguage, onApply: (AppLanguage) -> Unit) {
     }
 }
 
-/** Buscador de fuentes: OK lo activa o lo desactiva. Con varios activados, "Fuentes" sale por secciones. */
+@Composable
+private fun qualityLabel(quality: Quality): String = if (quality == Quality.UNKNOWN) {
+    localizedStringResource(StringsR.string.settings_unknown_quality)
+} else {
+    quality.label
+}
+
+@Composable
+private fun acceptedSummary(acceptedLabels: List<String>, acceptsAll: Boolean): String = when {
+    acceptedLabels.isEmpty() -> localizedStringResource(StringsR.string.settings_accepts_none)
+    acceptsAll -> localizedStringResource(StringsR.string.settings_accepts_all)
+    else -> localizedStringResource(StringsR.string.settings_accepts_values, acceptedLabels.joinToString(" · "))
+}
+
+@Composable
+private fun SourceExclusionGroupCard(title: String, summary: String, expanded: Boolean, onClick: () -> Unit) {
+    FocusCard(onClick = onClick) { focused ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                )
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Muted,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.width(24.dp))
+            Text(
+                text = if (expanded) "▾" else "▸",
+                style = MaterialTheme.typography.headlineSmall,
+                color = if (focused) Color.White else Muted,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SourceExclusionCard(label: String, excluded: Boolean, onClick: () -> Unit) {
+    FocusCard(onClick = onClick) { _ ->
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                color = Color.White,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(24.dp))
+            SegmentOption(
+                localizedStringResource(
+                    if (excluded) StringsR.string.settings_excluded else StringsR.string.settings_shown,
+                ),
+                selected = excluded,
+            )
+        }
+    }
+}
+
 @Composable
 private fun ProviderCard(provider: SourceProvider, enabled: Boolean, onClick: () -> Unit) {
     FocusCard(onClick = onClick) { _ ->
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(provider.section, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold), color = Color.White)
+                Text(localizedStringResource(provider.sectionResource), style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold), color = Color.White)
                 Text(providerNote(provider), style = MaterialTheme.typography.bodyMedium, color = Muted)
             }
             Spacer(Modifier.width(24.dp))
-            SegmentOption(if (enabled) tr("Activado", "On") else tr("Desactivado", "Off"), selected = enabled)
+            SegmentOption(if (enabled) localizedStringResource(StringsR.string.settings_on_5f22c1) else localizedStringResource(StringsR.string.settings_off_25e189), selected = enabled)
         }
     }
 }
 
+@Composable
 private fun providerNote(p: SourceProvider): String = when (p) {
-    SourceProvider.TORRENTIO -> tr("El buscador principal, como en Stremio.", "The main finder, like in Stremio.")
-    SourceProvider.PEERFLIX -> tr("Torrents en castellano de webs españolas (DonTorrent, MejorTorrent, Wolfmax4k…) y algunos en inglés.", "Spanish torrents from Spanish sites (DonTorrent, MejorTorrent, Wolfmax4k…) plus some in English.")
-    SourceProvider.KNABEN,
-    SourceProvider.THEPIRATEBAY -> tr("Buscadores propios de Bambi: The Pirate Bay, Knaben y Nyaa (Real-Debrid y AllDebrid).", "Bambi's own finders: The Pirate Bay, Knaben and Nyaa (Real-Debrid and AllDebrid).")
-    SourceProvider.NYAA -> tr("Buscador propio de anime (CocoScrapers).", "Own anime finder (CocoScrapers).")
-    SourceProvider.COMET -> tr("Comet con tu token de Real-Debrid (se envía a comet.elfhosted.com, como en Umbrella).", "Comet with your Real-Debrid token (sent to comet.elfhosted.com, like Umbrella).")
-    SourceProvider.AIOSTREAMS -> tr("Cualquier addon de Stremio (AIOStreams, Comet, MediaFusion…). Pega la URL de su manifiesto en Otros servicios → Addon de Stremio.", "Any Stremio addon (AIOStreams, Comet, MediaFusion…). Paste its manifest URL in Other services → Stremio addon.")
+    SourceProvider.TORRENTIO -> localizedStringResource(StringsR.string.settings_the_main_finder_like_in_stremio)
+    SourceProvider.PEERFLIX -> localizedStringResource(StringsR.string.settings_spanish_torrents_from_spanish_sites_dontorrent_mejortorrent)
+    SourceProvider.KNABEN -> localizedStringResource(StringsR.string.settings_bambi_s_own_finders_together_the_pirate)
+    SourceProvider.THEPIRATEBAY -> localizedStringResource(StringsR.string.settings_bambi_s_own_finders_together_the_pirate)
+    SourceProvider.NYAA -> localizedStringResource(StringsR.string.settings_own_anime_finder_cocoscrapers_real_debrid_only)
+    SourceProvider.COMET -> localizedStringResource(StringsR.string.settings_comet_with_your_real_debrid_token_sent)
+    SourceProvider.AIOSTREAMS -> localizedStringResource(StringsR.string.settings_any_stremio_addon_aiostreams_comet_mediafusion_paste)
+    SourceProvider.ITHIL -> localizedStringResource(StringsR.string.settings_ithil_indexed_sources_through_alldebrid)
 }
 
 @Composable
-private fun SegmentOption(text: String, selected: Boolean) {
+internal fun SegmentOption(text: String, selected: Boolean) {
     Text(
         text,
-        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
         color = if (selected) Color.Black else Color.White.copy(alpha = 0.7f),
         modifier = Modifier
             .background(if (selected) Color.White else Color.Transparent, RoundedCornerShape(50))
@@ -896,12 +1525,11 @@ private fun SegmentOption(text: String, selected: Boolean) {
     )
 }
 
-/** ◀ ▶ cambian el búfer de 10 en 10 (50–100 s) sin salir de la tarjeta. */
 @Composable
-private fun BufferCard(seconds: Int, onChange: (Int) -> Unit) {
+private fun BufferCard(seconds: Int, enabled: Boolean, onChange: (Int) -> Unit) {
     FocusCard(
         modifier = Modifier.onPreviewKeyEvent { event ->
-            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+            if (!enabled || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
             when (event.key) {
                 Key.DirectionLeft -> {
                     if (seconds > MIN_BUFFER) onChange(-10)
@@ -918,12 +1546,16 @@ private fun BufferCard(seconds: Int, onChange: (Int) -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    tr("Búfer del reproductor", "Player buffer"),
+                    localizedStringResource(StringsR.string.settings_player_buffer),
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                     color = Color.White,
                 )
                 Text(
-                    tr("Segundos de vídeo que se cargan por adelantado. Más búfer aguanta mejor los cortes de conexión.", "Seconds of video loaded ahead. A bigger buffer copes better with connection drops."),
+                    when {
+                        !enabled -> localizedStringResource(StringsR.string.settings_chosen_automatically_from_the_available_memory)
+                        seconds <= 40 -> localizedStringResource(StringsR.string.settings_lightweight_5_s_back_buffer_up_to)
+                        else -> localizedStringResource(StringsR.string.settings_seconds_of_video_buffered_ahead_use_to)
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = Muted,
                 )
@@ -931,7 +1563,7 @@ private fun BufferCard(seconds: Int, onChange: (Int) -> Unit) {
             Spacer(Modifier.width(24.dp))
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Arrow("◀", enabled = focused && seconds > MIN_BUFFER)
+                    Arrow("◀", enabled = enabled && focused && seconds > MIN_BUFFER)
                     Text(
                         "$seconds s",
                         fontFamily = DisplayFont,
@@ -939,21 +1571,25 @@ private fun BufferCard(seconds: Int, onChange: (Int) -> Unit) {
                         color = Color.White,
                         modifier = Modifier.padding(horizontal = 18.dp),
                     )
-                    Arrow("▶", enabled = focused && seconds < MAX_BUFFER)
+                    Arrow("▶", enabled = enabled && focused && seconds < MAX_BUFFER)
                 }
                 Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    (MIN_BUFFER..MAX_BUFFER step 10).forEach { step ->
-                        Box(
-                            Modifier
-                                .width(22.dp)
-                                .height(4.dp)
-                                .background(
-                                    if (step <= seconds) Color.White else Color.White.copy(alpha = 0.18f),
-                                    RoundedCornerShape(2.dp),
-                                ),
-                        )
+                if (enabled) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        (MIN_BUFFER..MAX_BUFFER step 10).forEach { step ->
+                            Box(
+                                Modifier
+                                    .width(22.dp)
+                                    .height(4.dp)
+                                    .background(
+                                        if (step <= seconds) Color.White else Color.White.copy(alpha = 0.18f),
+                                        RoundedCornerShape(2.dp),
+                                    ),
+                            )
+                        }
                     }
+                } else {
+                    Text(localizedStringResource(StringsR.string.settings_automatic_8e7638), style = MaterialTheme.typography.bodySmall, color = Muted)
                 }
             }
         }
@@ -966,23 +1602,8 @@ private fun Arrow(symbol: String, enabled: Boolean) {
 }
 
 @Composable
-private fun AboutCard(
-    onPair: suspend (String) -> Boolean,
-    isActivated: Boolean,
-    onSync: suspend () -> com.shieldstream.tv.domain.CustomCatalogRepository.SyncResult,
-    getCatalogVersion: () -> String?,
-    upstreamVersion: String,
-) {
+private fun AboutCard(onClick: () -> Unit) {
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
-    var clickCount by remember { mutableIntStateOf(0) }
-    var lastClickTime by remember { mutableLongStateOf(0L) }
-    var showPinDialog by remember { mutableStateOf(false) }
-    var pinError by remember { mutableStateOf<String?>(null) }
-    var activatedState by remember { mutableStateOf(isActivated) }
-    var catalogVersion by remember { mutableStateOf(getCatalogVersion()) }
-    var isSyncing by remember { mutableStateOf(false) }
-
     val version = remember {
         runCatching {
             @Suppress("DEPRECATION")
@@ -990,460 +1611,32 @@ private fun AboutCard(
         }.getOrNull() ?: "?"
     }
     val testing = context.packageName.endsWith(".debug")
-    FocusCard(
-        onClick = {
-            if (activatedState) {
-                // Si ya está activado: un clic comprueba/fuerza actualización de catálogo
-                if (!isSyncing) {
-                    isSyncing = true
-                    coroutineScope.launch {
-                        when (val res = onSync()) {
-                            is com.shieldstream.tv.domain.CustomCatalogRepository.SyncResult.Updated -> {
-                                catalogVersion = res.version
-                                android.widget.Toast.makeText(context, tr("Catálogo actualizado a v${res.version}", "Catalog updated to v${res.version}"), android.widget.Toast.LENGTH_SHORT).show()
-                            }
-                            is com.shieldstream.tv.domain.CustomCatalogRepository.SyncResult.UpToDate -> {
-                                catalogVersion = res.version
-                                android.widget.Toast.makeText(context, tr("Catálogo al día (v${res.version})", "Catalog up to date (v${res.version})"), android.widget.Toast.LENGTH_SHORT).show()
-                            }
-                            is com.shieldstream.tv.domain.CustomCatalogRepository.SyncResult.Error -> {
-                                android.widget.Toast.makeText(context, tr("Error de sincronización: ${res.message}", "Sync error: ${res.message}"), android.widget.Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                        isSyncing = false
-                    }
-                }
-            } else {
-                // Si no está activado: 5 clics para el PIN
-                val now = System.currentTimeMillis()
-                if (now - lastClickTime < 1500L) {
-                    clickCount++
-                } else {
-                    clickCount = 1
-                }
-                lastClickTime = now
-                if (clickCount >= 5) {
-                    clickCount = 0
-                    showPinDialog = true
-                }
-            }
-        }
-    ) { _ ->
+    FocusCard(onClick = onClick) { _ ->
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    if (testing) tr("Bambi (pruebas)", "Bambi (testing)") else "Bambi",
+                    if (testing) localizedStringResource(StringsR.string.settings_bambi_testing) else "Bambi",
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                     color = Color.White,
                 )
                 Text(
-                    if (activatedState) {
-                        val vText = catalogVersion?.let { " · v$it" } ?: ""
-                        if (isSyncing) tr("Comprobando actualizaciones de catálogo...", "Checking catalog updates...")
-                        else tr("Catálogo conectado$vText · fuentes directas activas (pulsa para buscar updates)", "Connected catalog$vText · direct streams active (click to sync)")
-                    } else {
-                        tr("Catálogo de TMDB · fuentes de Torrentio · reproducción con Real-Debrid", "Catalog by TMDB · sources from Torrentio · playback via Real-Debrid")
-                    },
+                    localizedStringResource(StringsR.string.settings_catalog_by_tmdb_sources_from_torrentio_playback),
                     style = MaterialTheme.typography.bodyMedium,
-                    color = if (activatedState) Color(0xFF4CAF50) else Muted,
+                    color = Muted,
                 )
             }
-            val upstreamText = if (upstreamVersion.isNotBlank()) " · base $upstreamVersion" else ""
-            Text(
-                tr("Versión $version$upstreamText", "Version $version$upstreamText"),
-                style = MaterialTheme.typography.titleMedium,
-                color = Muted,
-            )
-        }
-    }
-
-    if (showPinDialog) {
-        com.shieldstream.tv.settings.profiles.PinDialog(
-            title = tr("Índice de fuentes", "Source Index"),
-            subtitle = tr("Introduce el PIN de sincronización", "Enter sync PIN"),
-            error = pinError,
-            length = 6,
-            onPin = { pin ->
-                coroutineScope.launch {
-                    val ok = onPair(pin)
-                    if (ok) {
-                        activatedState = true
-                        catalogVersion = getCatalogVersion()
-                        showPinDialog = false
-                        pinError = null
-                        android.widget.Toast.makeText(context, tr("Fuentes sincronizadas", "Sources synchronized"), android.widget.Toast.LENGTH_SHORT).show()
-                    } else {
-                        pinError = tr("PIN incorrecto o no disponible", "Invalid or unavailable PIN")
-                    }
-                }
-            },
-            onDismiss = {
-                showPinDialog = false
-                pinError = null
-            }
-        )
-    }
-}
-
-/**
- * Debrid Relay: manda las peticiones de AllDebrid y Real-Debrid a un relay propio (VPS) con un PIN de 6 cifras,
- * para que la IP del relay sea la que ven los servicios. Cada fila es enfocable: OK edita, ◀ ▶ activan o
- * desactivan los interruptores. Las ventanas de edición las pinta la pantalla, no esta tarjeta.
- */
-@Composable
-private fun RelaySettingsCard(
-    url: String?,
-    pin: String?,
-    allDebrid: Boolean,
-    realDebrid: Boolean,
-    isVip: Boolean = false,
-    onEdit: (RelayField) -> Unit,
-    onAllDebrid: (Boolean) -> Unit,
-    onRealDebrid: (Boolean) -> Unit,
-    urlModifier: Modifier = Modifier,
-    pinModifier: Modifier = Modifier,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (isVip) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFF261E10), RoundedCornerShape(12.dp))
-                    .border(1.dp, Color(0xFFFFD479).copy(alpha = 0.45f), RoundedCornerShape(12.dp))
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-            ) {
-                Text("👑", fontSize = 20.sp)
-                Spacer(Modifier.width(12.dp))
-                Column {
-                    Text(
-                        tr("Servidor VIP Conectado", "VIP Server Connected"),
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = Color(0xFFFFD479),
-                    )
-                    Text(
-                        tr("Tu cuenta Debrid y Catálogo se configuran automáticamente desde tu servidor.", "Your Debrid and Catalog account are automatically configured from your server."),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White.copy(alpha = 0.75f),
-                    )
-                }
-            }
-        }
-        FocusCard(modifier = urlModifier, onClick = { onEdit(RelayField.URL) }) { focused ->
-            RelayRow(
-                title = tr("URL del relay", "Relay URL"),
-                value = url?.takeIf { it.isNotBlank() } ?: tr("No configurada", "Not set"),
-                valueColor = if (url.isNullOrBlank()) Amber else Color.White.copy(alpha = 0.8f),
-                hint = tr("OK para cambiar ›", "OK to change ›"),
-                focused = focused,
-            )
-        }
-        FocusCard(modifier = pinModifier, onClick = { onEdit(RelayField.PIN) }) { focused ->
-            RelayRow(
-                title = tr("PIN del relay", "Relay PIN"),
-                value = pin?.takeIf { it.isNotBlank() }?.let { "●".repeat(6) } ?: tr("No configurado", "Not set"),
-                valueColor = if (pin.isNullOrBlank()) Amber else Color.White.copy(alpha = 0.8f),
-                hint = tr("OK para cambiar ›", "OK to change ›"),
-                focused = focused,
-            )
-        }
-        RelayToggleRow(
-            title = tr("AllDebrid por el relay", "AllDebrid through the relay"),
-            subtitle = tr(
-                "Las peticiones a AllDebrid salen desde la IP del relay (necesita URL y PIN).",
-                "AllDebrid requests go out from the relay's IP (needs URL and PIN).",
-            ),
-            enabled = allDebrid,
-            onToggle = onAllDebrid,
-        )
-        RelayToggleRow(
-            title = tr("Real-Debrid por el relay", "Real-Debrid through the relay"),
-            subtitle = tr(
-                "Las peticiones a Real-Debrid salen desde la IP del relay (necesita URL y PIN).",
-                "Real-Debrid requests go out from the relay's IP (needs URL and PIN).",
-            ),
-            enabled = realDebrid,
-            onToggle = onRealDebrid,
-        )
-        Text(
-            if (allDebrid || realDebrid) {
-                if (url.isNullOrBlank() || pin.isNullOrBlank()) {
-                    tr(
-                        "Relay activado pero sin URL o PIN: el debrid fallará hasta que lo configures.",
-                        "Relay enabled without URL or PIN: debrid will fail until you set them.",
-                    )
-                } else {
-                    tr(
-                        "Relay activo. Si falla, la app usará la conexión directa al desactivarlo.",
-                        "Relay active. If it fails, turn it off to go back to a direct connection.",
-                    )
-                }
-            } else {
-                tr(
-                    "Desactivado: AllDebrid y Real-Debrid se conectan directamente desde la Shield.",
-                    "Off: AllDebrid and Real-Debrid connect directly from the Shield.",
-                )
-            },
-            style = MaterialTheme.typography.bodyMedium,
-            color = if ((allDebrid || realDebrid) && (url.isNullOrBlank() || pin.isNullOrBlank())) Amber else Muted,
-            modifier = Modifier.padding(start = 4.dp, top = 2.dp),
-        )
-    }
-}
-
-private enum class RelayField { URL, PIN }
-
-@Composable
-private fun RelayRow(title: String, value: String, valueColor: Color, hint: String, focused: Boolean) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                title,
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                color = Color.White,
-            )
-            Text(
-                value,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 16.sp,
-                color = valueColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
-        Spacer(Modifier.width(16.dp))
-        Text(
-            hint,
-            style = MaterialTheme.typography.labelLarge,
-            color = if (focused) Color.White else Color.Transparent,
-        )
-    }
-}
-
-/** Interruptor de una tarjeta: OK lo cambia y ◀ ▶ también (como el resto de ajustes). */
-@Composable
-private fun RelayToggleRow(title: String, subtitle: String, enabled: Boolean, onToggle: (Boolean) -> Unit) {
-    FocusCard(
-        onClick = { onToggle(!enabled) },
-        modifier = Modifier.onPreviewKeyEvent { event ->
-            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-            when (event.key) {
-                Key.DirectionLeft -> { onToggle(true); true }
-                Key.DirectionRight -> { onToggle(false); true }
-                else -> false
-            }
-        },
-    ) { _ ->
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White,
-                )
-                Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = Muted)
-            }
-            Spacer(Modifier.width(16.dp))
-            RelaySwitch(checked = enabled)
+            Text(localizedStringResource(StringsR.string.settings_version, version), style = MaterialTheme.typography.titleMedium, color = Muted)
         }
     }
 }
 
-/** Interruptor dibujado a mano: Material no tiene Switch con el tamaño que pide la tele. */
-@Composable
-private fun RelaySwitch(checked: Boolean) {
-    Box(
-        contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart,
-        modifier = Modifier
-            .width(64.dp)
-            .height(32.dp)
-            .background(
-                if (checked) Green.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.14f),
-                RoundedCornerShape(50),
-            )
-            .padding(3.dp),
-    ) {
-        Box(Modifier.size(26.dp).background(Color.White, CircleShape))
-    }
-}
-
-/** Ventana para escribir la URL del relay o el PIN. Valida antes de guardar. */
-@Composable
-private fun RelayEditorDialog(
-    field: RelayField,
-    initial: String,
-    hasCurrentPin: Boolean = false,
-    onSave: (String) -> Unit,
-    onClose: () -> Unit,
-) {
-    // La URL no es un secreto: se conserva al recomponer. El PIN sí lo es, así que no se guarda en el estado guardado.
-    var input by rememberSaveable(field) { mutableStateOf(if (field == RelayField.PIN) "" else initial) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val fieldRequester = remember { FocusRequester() }
-    val saveRequester = remember { FocusRequester() }
-    val keyboard = LocalSoftwareKeyboardController.current
-    var fieldFocused by remember { mutableStateOf(false) }
-    LaunchedEffect(field) {
-        withFrameNanos { }
-        runCatching { fieldRequester.requestFocus() }
-    }
-    val isPin = field == RelayField.PIN
-
-    fun submit() {
-        val clean = input.trim()
-        val normalized = if (isPin || clean.isEmpty()) clean else if (clean.startsWith("http://") || clean.startsWith("https://")) clean else "https://$clean"
-        // Misma validación que aplicará el interceptor: si aquí no hay host, en reproducción tampoco.
-        val host = if (isPin) null else runCatching { java.net.URI(normalized).host }.getOrNull()
-        val problem = when {
-            clean.isEmpty() && !isPin -> tr(
-                "Escribe la URL del relay",
-                "Type the relay URL",
-            )
-            clean.isEmpty() -> tr("Escribe el PIN", "Type the PIN")
-            !isPin && host.isNullOrBlank() ->
-                tr("La URL no es válida (revisa el dominio)", "The URL isn't valid (check the domain)")
-            else -> null
-        }
-        if (problem != null) {
-            error = problem
-            return
-        }
-        // Se guarda sin barras finales: las rutas se montan como "<url>/alldebrid" y "<url>/stream".
-        onSave(if (isPin) clean else normalized.trimEnd('/'))
-    }
-
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.75f))
-            .onBackKey(enabled = true) { onClose() },
-    ) {
-        Column(
-            Modifier
-                .width(720.dp)
-                .background(Color(0xFF1B1D29), RoundedCornerShape(20.dp))
-                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(20.dp))
-                .padding(36.dp),
-        ) {
-            Text(
-                if (isPin) tr("PIN del Debrid Relay", "Debrid Relay PIN") else tr("URL del Debrid Relay", "Debrid Relay URL"),
-                style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                color = Color.White,
-            )
-            Text(
-                if (isPin) {
-                    if (hasCurrentPin) {
-                        tr(
-                            "PIN que el relay espera en la cabecera X-Relay-Token. Ya hay un PIN guardado: el nuevo lo sustituye.",
-                            "PIN the relay expects in the X-Relay-Token header. A PIN is already saved: the new one replaces it.",
-                        )
-                    } else {
-                        tr("PIN que el relay espera en la cabecera X-Relay-Token.", "PIN the relay expects in the X-Relay-Token header.")
-                    }
-                } else {
-                    tr(
-                        "Dirección del relay, p. ej. relay.midominio.com. Las peticiones van a /alldebrid y /realdebrid.",
-                        "Relay address, e.g. relay.mydomain.com. Requests go to /alldebrid and /realdebrid.",
-                    )
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = Muted,
-            )
-            Spacer(Modifier.height(20.dp))
-            BasicTextField(
-                value = input,
-                onValueChange = {
-                    val next = it.replace("\n", "")
-                    input = if (isPin) next.filter { c -> c.isDigit() } else next
-                    error = null
-                },
-                singleLine = true,
-                textStyle = TextStyle(color = Color.White, fontSize = 20.sp, fontFamily = FontFamily.Monospace),
-                cursorBrush = SolidColor(Color.White),
-                keyboardOptions = KeyboardOptions(
-                    autoCorrectEnabled = false,
-                    keyboardType = if (isPin) KeyboardType.NumberPassword else KeyboardType.Uri,
-                    imeAction = ImeAction.Done,
-                ),
-                keyboardActions = KeyboardActions(onDone = {
-                    keyboard?.hide()
-                    submit()
-                }),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .focusRequester(fieldRequester)
-                    .onFocusChanged { fieldFocused = it.isFocused }
-                    .onPreviewKeyEvent { event ->
-                        when (event.key) {
-                            Key.DirectionCenter, Key.Enter -> {
-                                if (event.type == KeyEventType.KeyUp) keyboard?.show()
-                                true
-                            }
-                            Key.DirectionDown -> {
-                                if (event.type == KeyEventType.KeyDown) runCatching { saveRequester.requestFocus() }
-                                true
-                            }
-                            else -> false
-                        }
-                    },
-                decorationBox = { inner ->
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .background(Color(0xFF101119), RoundedCornerShape(10.dp))
-                            .border(
-                                width = if (fieldFocused) 2.dp else 1.dp,
-                                color = if (fieldFocused) Color.White else Color.White.copy(alpha = 0.2f),
-                                shape = RoundedCornerShape(10.dp),
-                            )
-                            .padding(horizontal = 18.dp, vertical = 16.dp),
-                    ) {
-                        if (input.isEmpty()) {
-                            Text(
-                                if (isPin) tr("PIN", "PIN") else "mi-servidor.com",
-                                fontSize = 18.sp,
-                                color = Color.White.copy(alpha = 0.35f),
-                            )
-                        }
-                        inner()
-                    }
-                },
-            )
-            Spacer(Modifier.height(12.dp))
-            Text(
-                error ?: if (isPin) {
-                    tr("Solo cifras", "Digits only")
-                } else {
-                    tr("Ej: mi-servidor.com", "e.g. my-server.com")
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = if (error != null) Red else Muted,
-            )
-            Spacer(Modifier.height(24.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                TvButton(
-                    text = tr("Guardar", "Save"),
-                    onClick = { submit() },
-                    modifier = Modifier.focusRequester(saveRequester),
-                )
-                TvButton(text = tr("Cancelar", "Cancel"), onClick = onClose)
-            }
-        }
-    }
-}
-
-/**
- * Ventana para escribir una clave. Se comprueba contra el servicio antes de guardarla.
- * En la tele: OK sobre el campo abre el teclado del sistema.
- */
 @Composable
 private fun KeyEditorDialog(
     editor: KeyEditor,
     onSave: (String) -> Unit,
     onRemove: () -> Unit,
     onClose: () -> Unit,
+    onAllDebridConnected: () -> Unit,
 ) {
     var input by rememberSaveable(editor.service) { mutableStateOf("") }
     val fieldRequester = remember { FocusRequester() }
@@ -1454,6 +1647,12 @@ private fun KeyEditorDialog(
         withFrameNanos { }
         runCatching { fieldRequester.requestFocus() }
     }
+    LaunchedEffect(editor.busy, editor.error) {
+        if (!editor.busy && editor.error != null) {
+            withFrameNanos { }
+            runCatching { saveRequester.requestFocus() }
+        }
+    }
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -1463,7 +1662,7 @@ private fun KeyEditorDialog(
     ) {
         Column(
             Modifier
-                .width(720.dp)
+                .width(if (editor.service == ApiService.ALLDEBRID) 1040.dp else 720.dp)
                 .background(Color(0xFF1B1D29), RoundedCornerShape(20.dp))
                 .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(20.dp))
                 .padding(36.dp),
@@ -1473,18 +1672,28 @@ private fun KeyEditorDialog(
                 Spacer(Modifier.width(16.dp))
                 Column {
                     Text(
-                        editor.service.title,
+                        localizedStringResource(editor.service.titleResource),
                         style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
                         color = Color.White,
                     )
                     Text(
-                        tr("${editor.service.keyName} · consíguela en ${editor.service.whereToGet}", "${editor.service.keyName} · get it at ${editor.service.whereToGet}"),
+                        if (editor.service == ApiService.ALLDEBRID) {
+                            localizedStringResource(StringsR.string.settings_alldebrid_qr_or_manual)
+                        } else {
+                            localizedStringResource(
+                                StringsR.string.settings_get_key_at,
+                                localizedStringResource(editor.service.keyNameResource),
+                                localizedStringResource(editor.service.whereToGetResource),
+                            )
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = Muted,
                     )
                 }
             }
             Spacer(Modifier.height(24.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
             BasicTextField(
                 value = input,
                 onValueChange = { input = it.replace("\n", "") },
@@ -1505,8 +1714,6 @@ private fun KeyEditorDialog(
                     .fillMaxWidth()
                     .focusRequester(fieldRequester)
                     .onFocusChanged { fieldFocused = it.isFocused }
-                    // OK del mando sobre el campo → teclado en pantalla.
-                    // ▼ → botones: el campo de texto se queda con las flechas y no dejaba salir hacia abajo.
                     .onPreviewKeyEvent { event ->
                         when (event.key) {
                             Key.DirectionCenter, Key.Enter -> {
@@ -1534,7 +1741,7 @@ private fun KeyEditorDialog(
                     ) {
                         if (input.isEmpty()) {
                             Text(
-                                if (fieldFocused) tr("Pulsa OK para escribir la clave nueva", "Press OK to type the new key") else tr("Clave nueva", "New key"),
+                                if (fieldFocused) localizedStringResource(StringsR.string.settings_press_ok_to_type_the_new_key) else localizedStringResource(StringsR.string.settings_new_key),
                                 fontSize = 18.sp,
                                 color = Color.White.copy(alpha = 0.35f),
                             )
@@ -1546,9 +1753,9 @@ private fun KeyEditorDialog(
             Spacer(Modifier.height(12.dp))
             Text(
                 text = when {
-                    editor.busy -> tr("Comprobando con ${editor.service.title}…", "Checking with ${editor.service.title}…")
+                    editor.busy -> localizedStringResource(StringsR.string.settings_checking_with_service, localizedStringResource(editor.service.titleResource))
                     editor.error != null -> editor.error
-                    else -> tr("Se comprueba con ${editor.service.title} antes de guardarla.", "It's checked with ${editor.service.title} before saving.")
+                    else -> localizedStringResource(StringsR.string.settings_key_checked_before_saving, localizedStringResource(editor.service.titleResource))
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = when {
@@ -1560,19 +1767,25 @@ private fun KeyEditorDialog(
             Spacer(Modifier.height(24.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 TvButton(
-                    text = tr("Comprobar y guardar", "Check and save"),
+                    text = localizedStringResource(StringsR.string.settings_check_and_save),
                     onClick = { onSave(input) },
                     enabled = !editor.busy,
                     modifier = Modifier.focusRequester(saveRequester),
                 )
                 if (!editor.service.required && editor.hasKey) {
-                    TvButton(text = tr("Quitar clave", "Remove key"), onClick = onRemove, enabled = !editor.busy)
+                    TvButton(text = localizedStringResource(StringsR.string.settings_remove_key), onClick = onRemove, enabled = !editor.busy)
                 }
-                TvButton(text = tr("Cancelar", "Cancel"), onClick = onClose, enabled = !editor.busy)
+                TvButton(text = localizedStringResource(StringsR.string.settings_cancel), onClick = onClose, enabled = !editor.busy)
+            }
+                }
+                if (editor.service == ApiService.ALLDEBRID) {
+                    Spacer(Modifier.width(24.dp))
+                    AllDebridQrPanel(onConnected = onAllDebridConnected)
+                }
             }
         }
     }
 }
 
-private const val MIN_BUFFER = 50
+private const val MIN_BUFFER = 20
 private const val MAX_BUFFER = 100

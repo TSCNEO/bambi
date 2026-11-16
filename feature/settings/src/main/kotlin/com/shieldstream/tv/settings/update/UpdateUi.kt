@@ -1,5 +1,9 @@
 package com.shieldstream.tv.settings.update
 
+import com.shieldstream.tv.ui.theme.AppShapes
+
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.localizedStringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -37,7 +41,6 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.shieldstream.tv.domain.AppUpdate
 import com.shieldstream.tv.domain.UpdateState
-import com.shieldstream.tv.model.tr
 import com.shieldstream.tv.ui.component.TvButton
 import com.shieldstream.tv.ui.component.tvClickable
 import kotlinx.coroutines.delay
@@ -46,19 +49,21 @@ private val Panel = Color(0xFF1A1C27)
 private val Muted = Color.White.copy(alpha = 0.6f)
 private val Red = Color(0xFFE50914)
 
-/**
- * Aviso "Hay una versión nueva" (como el de las apps de la tienda), encima de lo que haya. Atrás = "Ahora no".
- * Se pone en "¿Quién está viendo?" y en el Inicio; nunca durante la reproducción.
- */
 @Composable
-fun UpdatePrompt(viewModel: UpdateViewModel = hiltViewModel()) {
+fun UpdatePrompt(
+    viewModel: UpdateViewModel = hiltViewModel(),
+    ithilViewModel: IthilUpdateViewModel = hiltViewModel(),
+) {
     val prompt by viewModel.prompt.collectAsStateWithLifecycle()
-    // Al volver de la pantalla del permiso (Atrás), si ya está concedido se sigue solo con la descarga.
     LifecycleResumeEffect(Unit) {
         viewModel.onResumed()
         onPauseOrDispose { }
     }
-    val visible = prompt as? UpdatePromptUiState.Visible ?: return
+    val visible = prompt as? UpdatePromptUiState.Visible
+    if (visible == null) {
+        IthilUpdatePrompt(ithilViewModel)
+        return
+    }
     val context = LocalContext.current
     Dialog(
         onDismissRequest = viewModel::later,
@@ -73,55 +78,79 @@ fun UpdatePrompt(viewModel: UpdateViewModel = hiltViewModel()) {
         ) {
             when (val s = visible.state) {
                 is UpdateState.Available -> UpdateBody(
-                    title = tr("Hay una versión nueva: ${s.update.version}", "A new version is available: ${s.update.version}"),
-                    subtitle = tr("Tienes la ${s.current}. Se actualiza sin perder perfiles, progreso ni claves.", "You have ${s.current}. Updating keeps your profiles, progress and keys."),
+                    title = localizedStringResource(StringsR.string.update_available_version, s.update.version),
+                    subtitle = localizedStringResource(StringsR.string.update_current_version, s.current),
                     update = s.update,
                 ) {
-                    Buttons(primary = tr("Actualizar", "Update"), onPrimary = viewModel::update, secondary = tr("Ahora no", "Not now"), onSecondary = viewModel::later)
+                    Buttons(primary = localizedStringResource(StringsR.string.settings_update), onPrimary = viewModel::update, secondary = localizedStringResource(StringsR.string.settings_not_now), onSecondary = viewModel::later)
                 }
                 is UpdateState.Downloading -> UpdateBody(
-                    title = tr("Descargando ${s.update.version}…", "Downloading ${s.update.version}…"),
+                    title = localizedStringResource(StringsR.string.update_downloading_version, s.update.version),
                     subtitle = "${(s.progress * 100).toInt()} %",
                     update = null,
                 ) {
                     ProgressBar(s.progress)
                     Spacer(Modifier.height(20.dp))
-                    Buttons(primary = tr("Seguir en segundo plano", "Keep downloading in background"), onPrimary = viewModel::later)
+                    Buttons(primary = localizedStringResource(StringsR.string.settings_keep_downloading_in_background), onPrimary = viewModel::later)
                 }
                 is UpdateState.Installing -> UpdateBody(
-                    title = tr("Listo para instalar", "Ready to install"),
-                    subtitle = tr(
-                        "Pulsa \"Instalar\" en la ventana de Android. Bambi se cerrará y al abrirla ya estará la ${s.update.version}.",
-                        "Press \"Install\" in Android's window. Bambi will close and reopen with ${s.update.version}.",
-                    ),
+                    title = localizedStringResource(StringsR.string.settings_ready_to_install),
+                    subtitle = localizedStringResource(StringsR.string.update_installing_version, s.update.version),
                     update = null,
                 ) {
-                    Buttons(primary = tr("Volver a abrir el instalador", "Open the installer again"), onPrimary = viewModel::update, secondary = tr("Cerrar", "Close"), onSecondary = viewModel::later)
+                    Buttons(primary = localizedStringResource(StringsR.string.settings_open_the_installer_again), onPrimary = viewModel::update, secondary = localizedStringResource(StringsR.string.settings_close), onSecondary = viewModel::later)
                 }
                 is UpdateState.NeedsPermission -> UpdateBody(
-                    title = tr("Falta un permiso (solo la primera vez)", "One permission needed (first time only)"),
-                    subtitle = tr(
-                        "Android pide permitir que Bambi instale apps. En la pantalla que se abre, activa Bambi y vuelve con Atrás.",
-                        "Android asks to allow Bambi to install apps. In the screen that opens, turn Bambi on and come back with Back.",
-                    ),
+                    title = localizedStringResource(StringsR.string.settings_one_permission_needed_first_time_only),
+                    subtitle = localizedStringResource(StringsR.string.settings_android_asks_to_allow_bambi_to_install),
                     update = null,
                 ) {
                     Buttons(
-                        primary = tr("Abrir ajustes", "Open settings"),
-                        // Si la tele no tiene ninguna de esas pantallas, se reintenta por si el permiso ya está dado.
+                        primary = localizedStringResource(StringsR.string.settings_open_settings),
                         onPrimary = { if (!viewModel.openInstallPermission(context)) viewModel.update() },
-                        secondary = tr("Ya está: actualizar", "Done: update"),
+                        secondary = localizedStringResource(StringsR.string.settings_done_update),
                         onSecondary = viewModel::update,
                     )
                 }
                 is UpdateState.Failed -> UpdateBody(
-                    title = tr("No se pudo actualizar", "Couldn't update"),
+                    title = localizedStringResource(StringsR.string.settings_couldn_t_update),
                     subtitle = s.message,
                     update = null,
                 ) {
-                    Buttons(primary = tr("Reintentar", "Retry"), onPrimary = viewModel::update, secondary = tr("Ahora no", "Not now"), onSecondary = viewModel::later)
+                    Buttons(primary = localizedStringResource(StringsR.string.settings_retry), onPrimary = viewModel::update, secondary = localizedStringResource(StringsR.string.settings_not_now), onSecondary = viewModel::later)
                 }
                 else -> Unit
+            }
+        }
+    }
+}
+
+@Composable
+fun IthilUpdatePrompt(viewModel: IthilUpdateViewModel = hiltViewModel()) {
+    val prompt by viewModel.prompt.collectAsStateWithLifecycle()
+    val available = prompt ?: return
+    Dialog(
+        onDismissRequest = viewModel::later,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Column(
+            Modifier
+                .width(620.dp)
+                .background(Panel, AppShapes.Panel)
+                .border(1.dp, Color.White.copy(alpha = 0.08f), AppShapes.Panel)
+                .padding(32.dp),
+        ) {
+            UpdateBody(
+                title = localizedStringResource(StringsR.string.settings_ithil_update_available_title, available.update.version),
+                subtitle = localizedStringResource(StringsR.string.settings_ithil_update_available_message),
+                update = null,
+            ) {
+                Buttons(
+                    primary = localizedStringResource(StringsR.string.settings_update),
+                    onPrimary = viewModel::update,
+                    secondary = localizedStringResource(StringsR.string.settings_not_now),
+                    onSecondary = viewModel::later,
+                )
             }
         }
     }
@@ -135,7 +164,7 @@ private fun UpdateBody(title: String, subtitle: String, update: AppUpdate?, acti
     val notes = update?.notes?.let(::cleanNotes).orEmpty()
     if (notes.isNotBlank()) {
         Spacer(Modifier.height(18.dp))
-        Text(tr("Novedades", "What's new"), color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+        Text(localizedStringResource(StringsR.string.settings_what_s_new), color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(6.dp))
         Text(notes, color = Muted, fontSize = 16.sp, maxLines = 9, overflow = TextOverflow.Ellipsis)
     }
@@ -143,7 +172,6 @@ private fun UpdateBody(title: String, subtitle: String, update: AppUpdate?, acti
     actions()
 }
 
-/** Las notas de la release vienen en Markdown: fuera títulos (ya pone "Novedades"), asteriscos y la sección de instalación. */
 private fun cleanNotes(raw: String): String = raw
     .substringBefore("### Instalar")
     .lines()
@@ -183,31 +211,27 @@ private fun ProgressBar(progress: Float) {
     }
 }
 
-/**
- * Tarjeta de Ajustes → "Actualizaciones": OK busca ahora; si hay versión nueva, OK la instala.
- * En "Bambi (pruebas)" solo informa (esa app no se actualiza sola).
- */
 @Composable
 fun UpdateCard(viewModel: UpdateViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var focused by remember { mutableStateOf(false) }
     val (title, subtitle) = when (val s = state) {
-        UpdateState.Unsupported -> tr("Actualizaciones", "Updates") to
-            tr("La app de pruebas no se actualiza sola: se instala desde el ordenador.", "The testing app doesn't self-update: it's installed from the computer.")
-        UpdateState.Idle -> tr("Buscar actualizaciones", "Check for updates") to
-            tr("Bambi mira sola si hay versión nueva al abrirse. OK para mirar ahora.", "Bambi checks for new versions when it opens. OK to check now.")
-        UpdateState.Checking -> tr("Buscando actualizaciones…", "Checking for updates…") to ""
-        is UpdateState.UpToDate -> tr("Estás al día", "You're up to date") to
-            tr("Tienes la última versión (${s.current}). OK para volver a mirar.", "You have the latest version (${s.current}). OK to check again.")
-        is UpdateState.Available -> tr("Versión nueva: ${s.update.version}", "New version: ${s.update.version}") to
-            tr("OK para descargarla e instalarla.", "OK to download and install it.")
-        is UpdateState.Downloading -> tr("Descargando ${s.update.version}…", "Downloading ${s.update.version}…") to "${(s.progress * 100).toInt()} %"
-        is UpdateState.NeedsPermission -> tr("Falta permiso para instalar", "Install permission needed") to
-            tr("OK abre la lista: activa Bambi y vuelve con Atrás.", "OK opens the list: turn Bambi on and come back with Back.")
-        is UpdateState.Installing -> tr("Listo para instalar", "Ready to install") to
-            tr("Pulsa \"Instalar\" en la ventana de Android.", "Press \"Install\" in Android's window.")
-        is UpdateState.Failed -> tr("No se pudo actualizar", "Couldn't update") to s.message
+        UpdateState.Unsupported -> localizedStringResource(StringsR.string.settings_updates) to
+            localizedStringResource(StringsR.string.settings_the_testing_app_doesn_t_self_update)
+        UpdateState.Idle -> localizedStringResource(StringsR.string.settings_check_for_updates) to
+            localizedStringResource(StringsR.string.settings_bambi_checks_for_new_versions_when_it)
+        UpdateState.Checking -> localizedStringResource(StringsR.string.settings_checking_for_updates) to ""
+        is UpdateState.UpToDate -> localizedStringResource(StringsR.string.settings_you_re_up_to_date) to
+            localizedStringResource(StringsR.string.update_latest_version, s.current)
+        is UpdateState.Available -> localizedStringResource(StringsR.string.update_new_version, s.update.version) to
+            localizedStringResource(StringsR.string.settings_ok_to_download_and_install_it)
+        is UpdateState.Downloading -> localizedStringResource(StringsR.string.update_downloading_version, s.update.version) to "${(s.progress * 100).toInt()} %"
+        is UpdateState.NeedsPermission -> localizedStringResource(StringsR.string.settings_install_permission_needed) to
+            localizedStringResource(StringsR.string.settings_ok_opens_the_list_turn_bambi_on)
+        is UpdateState.Installing -> localizedStringResource(StringsR.string.settings_ready_to_install) to
+            localizedStringResource(StringsR.string.settings_press_install_in_android_s_window)
+        is UpdateState.Failed -> localizedStringResource(StringsR.string.settings_couldn_t_update) to s.message
     }
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -223,8 +247,6 @@ fun UpdateCard(viewModel: UpdateViewModel = hiltViewModel()) {
             .tvClickable {
                 when (val s = state) {
                     is UpdateState.Available -> viewModel.update()
-                    // OK abre la pantalla del sistema; al volver con el permiso dado sigue solo (UpdatePrompt.onResumed).
-                    // Si esta tele no tiene esa pantalla, se reintenta por si el permiso ya está dado.
                     is UpdateState.NeedsPermission -> if (!viewModel.openInstallPermission(context)) viewModel.update()
                     is UpdateState.Failed -> if (s.update != null) viewModel.update() else viewModel.checkNow()
                     UpdateState.Idle, is UpdateState.UpToDate -> viewModel.checkNow()

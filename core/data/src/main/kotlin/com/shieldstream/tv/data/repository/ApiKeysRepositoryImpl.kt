@@ -1,12 +1,16 @@
 package com.shieldstream.tv.data.repository
 
-import com.shieldstream.tv.model.tr
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.Texts
 import com.shieldstream.tv.data.security.TokenStore
 import com.shieldstream.tv.data.subtitles.SubtitleHttp
 import com.shieldstream.tv.domain.ApiKeysRepository
 import com.shieldstream.tv.domain.ApiService
 import com.shieldstream.tv.domain.KeyCheck
 import com.shieldstream.tv.domain.SettingsRepository
+import com.shieldstream.tv.domain.StremioAddonMetadata
+import com.shieldstream.tv.domain.StremioAddons
+import com.shieldstream.tv.network.api.AllDebridApi
 import com.shieldstream.tv.network.api.RealDebridApi
 import com.shieldstream.tv.network.api.TmdbApi
 import com.shieldstream.tv.network.api.TorrentioApi
@@ -23,6 +27,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.Request
 import java.io.IOException
+import java.net.URI
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,18 +38,20 @@ class ApiKeysRepositoryImpl @Inject constructor(
     private val settings: SettingsRepository,
     private val tmdb: TmdbApi,
     private val realDebrid: RealDebridApi,
+    private val allDebrid: AllDebridApi,
     private val http: SubtitleHttp,
     private val torrentioApi: TorrentioApi,
+    private val texts: Texts,
 ) : ApiKeysRepository {
 
     private val _keys = MutableStateFlow(read())
+    private val addonMetadata = ConcurrentHashMap<String, StremioAddonMetadata>()
     override val keys: StateFlow<Map<ApiService, String?>> = _keys.asStateFlow()
 
     private fun read(): Map<ApiService, String?> = ApiService.entries.associateWith { store.getSecret(it.storeKey) }
 
     override suspend fun set(service: ApiService, value: String?) {
         val clean = value?.trim()?.takeIf { it.isNotEmpty() }
-        // El token de RD pasa por SettingsRepository para que su Flow (lo usa RealDebridRepository) se entere.
         if (service == ApiService.REAL_DEBRID) settings.setToken(clean) else store.setSecret(service.storeKey, clean)
         _keys.value = read()
     }
@@ -54,14 +62,9 @@ class ApiKeysRepositoryImpl @Inject constructor(
             when (service) {
                 ApiService.REAL_DEBRID -> checkRealDebrid(key)
                 ApiService.TMDB -> {
-                    // Error habitual: pegar el "token de lectura de la API" (v4, un JWT larguísimo que empieza por
-                    // eyJ) en vez de la "clave de la API" (v3, 32 caracteres). Se explica en vez de "clave no válida".
                     if (key.startsWith("eyJ") && key.length > 60) {
                         KeyCheck.Invalid(
-                            tr(
-                                "Eso es el «token de lectura» (v4). Bambi usa la «Clave de la API» (v3): 32 letras y números, en la misma página de TMDB (Ajustes → API).",
-                                "That's the \"read access token\" (v4). Bambi uses the \"API Key\" (v3): 32 letters and numbers, on the same TMDB page (Settings → API).",
-                            ),
+                            texts.get(StringsR.string.data_that_s_the_read_access_token_v4),
                         )
                     } else {
                         tmdb.trendingAll(key)
@@ -70,52 +73,83 @@ class ApiKeysRepositoryImpl @Inject constructor(
                 }
                 ApiService.SUBDL -> checkSubDl(key)
                 ApiService.AIOSTREAMS -> checkAioStreams(key)
-                ApiService.TORBOX, ApiService.PREMIUMIZE, ApiService.ALLDEBRID,
+                ApiService.ALLDEBRID -> checkAllDebrid(key)
+                ApiService.TORBOX, ApiService.PREMIUMIZE,
                 ApiService.DEBRID_LINK, ApiService.OFFCLOUD -> checkViaTorrentio(service, key)
             }
         }.getOrElse { describe(it) }
+    }
+
+    override suspend fun addonMetadata(manifestUrl: String): StremioAddonMetadata? = withContext(Dispatchers.IO) {
+        val base = StremioAddons.baseUrl(manifestUrl) ?: return@withContext null
+        addonMetadata[base]?.let { return@withContext it }
+        val metadata = runCatching {
+            val body = torrentioApi.raw("$base/manifest.json").use { it.string() }
+            val manifest = Json.parseToJsonElement(body).jsonObject
+            StremioAddonMetadata(
+                name = manifest["name"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() },
+                logoUrl = manifest["logo"]?.jsonPrimitive?.contentOrNull?.let { resolveAddonLogo(base, it) },
+            )
+        }.getOrNull() ?: return@withContext null
+        addonMetadata[base] = metadata
+        metadata
+    }
+
+    private fun resolveAddonLogo(base: String, raw: String): String? {
+        val value = raw.trim().takeIf { it.isNotEmpty() } ?: return null
+        val resolved = runCatching { URI(base).resolve(value).toString() }.getOrNull() ?: return null
+        return resolved.takeIf { it.startsWith("http://") || it.startsWith("https://") }
     }
 
     private suspend fun checkRealDebrid(token: String): KeyCheck {
         val user = realDebrid.user("Bearer $token")
         val days = user.premium / 86_400
         val detail = if (user.type == "premium" && user.premium > 0) {
-            tr("${user.username} · Premium: quedan $days días", "${user.username} · Premium: $days days left")
+            texts.get(StringsR.string.data_premium_days_left, user.username, days)
         } else {
-            tr("${user.username} · sin Premium", "${user.username} · no Premium")
+            texts.get(StringsR.string.data_no_premium, user.username)
         }
         return KeyCheck.Valid(detail)
     }
 
-    /**
-     * Debrids vía Torrentio: se piden las fuentes de una película muy conocida (El club de la lucha) con la clave.
-     * Clave mala o cuenta caducada → Torrentio devuelve su fuente de error ("Invalid … ApiKey/Token!").
-     */
-    private suspend fun checkViaTorrentio(service: ApiService, key: String): KeyCheck {
-        val debrid = DebridService.of(service) ?: return KeyCheck.Invalid(tr("Servicio desconocido", "Unknown service"))
-        val streams = torrentioApi.streamsWithConfig(torrentioConfig(debrid, key), "movie", "tt0137523").streams
-        streams.firstOrNull { it.isDebridError() }?.let { return KeyCheck.Invalid(debridErrorMessage(it.title, debrid.title)) }
-        if (streams.none { it.url?.contains("/resolve/") == true }) {
-            return KeyCheck.Invalid(tr("Torrentio no devolvió enlaces de ${debrid.title}. Prueba más tarde.", "Torrentio returned no ${debrid.title} links. Try again later."))
+    private suspend fun checkAllDebrid(key: String): KeyCheck {
+        val response = allDebrid.user("Bearer $key")
+        if (response.status != "success") {
+            return KeyCheck.Invalid(response.error?.message ?: texts.get(StringsR.string.data_couldn_t_verify))
         }
-        return KeyCheck.Valid(tr("Conectado (vía Torrentio)", "Connected (via Torrentio)"))
+        val user = response.data?.user
+            ?: return KeyCheck.Invalid(texts.get(StringsR.string.data_couldn_t_verify))
+        val detail = if (user.isPremium) {
+            val secondsLeft = (user.premiumUntil - System.currentTimeMillis() / 1_000).coerceAtLeast(0)
+            texts.get(StringsR.string.data_premium_days_left, user.username, secondsLeft / 86_400)
+        } else {
+            texts.get(StringsR.string.data_no_premium, user.username)
+        }
+        return KeyCheck.Valid(detail)
     }
 
-    /** Búsqueda mínima (El club de la lucha): con clave mala SubDL responde 401/403 o status=false. */
-    /** Se piden las fuentes de una película conocida: si responde con JSON válido, la URL vale. */
-    /** Uno o varios addons (URLs separadas por espacios): se prueba cada uno con Cadena perpetua. */
+    private suspend fun checkViaTorrentio(service: ApiService, key: String): KeyCheck {
+        val debrid = DebridService.of(service) ?: return KeyCheck.Invalid(texts.get(StringsR.string.data_unknown_service))
+        val streams = torrentioApi.streamsWithConfig(torrentioConfig(debrid, key), "movie", "tt0137523").streams
+        streams.firstOrNull { it.isDebridError() }?.let { return KeyCheck.Invalid(debridErrorMessage(it.title, debrid.title, texts)) }
+        if (streams.none { it.url?.contains("/resolve/") == true }) {
+            return KeyCheck.Invalid(texts.get(StringsR.string.data_torrentio_no_links, debrid.title))
+        }
+        return KeyCheck.Valid(texts.get(StringsR.string.data_connected_via_torrentio))
+    }
+
     private suspend fun checkAioStreams(url: String): KeyCheck {
         val bases = aioStreamBases(url)
         if (bases.isEmpty()) {
-            return KeyCheck.Invalid(tr("Pega la URL del manifiesto (termina en /manifest.json). Varios: separados por espacios.", "Paste the manifest URL (ends in /manifest.json). Several: separated by spaces."))
+            return KeyCheck.Invalid(texts.get(StringsR.string.data_paste_the_manifest_url_ends_in_manifest))
         }
         val counts = bases.map { base -> runCatching { torrentioApi.streamsAt("$base/stream/movie/tt0111161.json").streams.size }.getOrNull() }
         val failed = counts.count { it == null }
-        if (failed == bases.size) return KeyCheck.Invalid(tr("Ningún addon responde", "No addon is responding"))
+        if (failed == bases.size) return KeyCheck.Invalid(texts.get(StringsR.string.data_no_addon_is_responding))
         val total = counts.filterNotNull().sum()
         return KeyCheck.Valid(
-            if (bases.size == 1) tr("Conectado · $total fuentes de prueba", "Connected · $total test sources")
-            else tr("${bases.size - failed} de ${bases.size} addons · $total fuentes de prueba", "${bases.size - failed} of ${bases.size} addons · $total test sources"),
+            if (bases.size == 1) texts.get(StringsR.string.data_test_sources, total)
+            else texts.get(StringsR.string.data_addons_test_sources, bases.size - failed, bases.size, total),
         )
     }
 
@@ -126,28 +160,27 @@ class ApiKeysRepositoryImpl @Inject constructor(
             .header("User-Agent", "Bambi")
             .build()
         http.client.newCall(request).execute().use { response ->
-            if (response.code == 401 || response.code == 403) return KeyCheck.Invalid(tr("Clave no válida", "Invalid key"))
-            if (!response.isSuccessful) return KeyCheck.Invalid(tr("SubDL respondió con error ${response.code}", "SubDL responded with error ${response.code}"))
+            if (response.code == 401 || response.code == 403) return KeyCheck.Invalid(texts.get(StringsR.string.data_invalid_key))
+            if (!response.isSuccessful) return KeyCheck.Invalid(texts.get(StringsR.string.data_subdl_http_error, response.code))
             val body = response.body?.string().orEmpty()
             val json = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull()
             val status = json?.get("status")?.jsonPrimitive?.booleanOrNull
             if (status == false) {
                 val message = json["error"]?.jsonPrimitive?.contentOrNull ?: json["message"]?.jsonPrimitive?.contentOrNull
-                return KeyCheck.Invalid(message ?: tr("Clave no válida", "Invalid key"))
+                return KeyCheck.Invalid(message ?: texts.get(StringsR.string.data_invalid_key))
             }
             return KeyCheck.Valid()
         }
     }
 
     private fun describe(e: Throwable): KeyCheck.Invalid {
-        // Retrofit no es dependencia directa de este módulo: el código HTTP se lee del mensaje ("HTTP 401 …").
         val code = Regex("""HTTP (\d{3})""").find(e.message.orEmpty())?.groupValues?.get(1)?.toIntOrNull()
         return KeyCheck.Invalid(
             when {
-                code == 401 || code == 403 -> tr("Clave no válida", "Invalid key")
-                code != null -> tr("El servicio respondió con error $code", "The service responded with error $code")
-                e is IOException -> tr("No se pudo conectar. Revisa la conexión.", "Couldn't connect. Check your connection.")
-                else -> e.message ?: tr("No se pudo comprobar", "Couldn't verify")
+                code == 401 || code == 403 -> texts.get(StringsR.string.data_invalid_key)
+                code != null -> texts.get(StringsR.string.data_service_http_error, code)
+                e is IOException -> texts.get(StringsR.string.data_couldn_t_connect_check_your_connection)
+                else -> e.message ?: texts.get(StringsR.string.data_couldn_t_verify)
             },
         )
     }

@@ -1,12 +1,13 @@
 package com.shieldstream.tv.data.subtitles
 
-import com.shieldstream.tv.model.tr
+import com.shieldstream.tv.strings.R as StringsR
 import android.content.Context
 import android.util.Log
 import com.shieldstream.tv.domain.SubtitleRepository
 import com.shieldstream.tv.model.ExternalSubtitle
 import com.shieldstream.tv.model.SubtitleFile
-import com.shieldstream.tv.model.SubtitleLanguages
+import com.shieldstream.tv.strings.Texts
+import com.shieldstream.tv.strings.subtitleLanguage
 import com.shieldstream.tv.model.SubtitleQuery
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +28,25 @@ import java.util.zip.ZipInputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
+internal fun hasConflictingLanguageName(language: String, release: String): Boolean =
+    language == "es" && release.contains("portugu", ignoreCase = true)
+
+internal fun mediaPart(name: String?): Int? = name?.let {
+    Regex("(?:cd|disc|disk|part)\\s*0*(\\d+)", RegexOption.IGNORE_CASE)
+        .find(it)?.groupValues?.get(1)?.toIntOrNull()
+}
+
+internal fun hasPartMismatch(release: String, playingFileName: String?): Boolean =
+    mediaPart(release)?.let { it != mediaPart(playingFileName) } == true
+
+internal fun movieArchiveCandidate(names: List<String>, playingFileName: String?): Int? {
+    if (names.size <= 1) return 0
+    val parts = names.map(::mediaPart)
+    if (parts.all { it == null }) return 0
+    val wanted = mediaPart(playingFileName) ?: return null
+    return parts.indices.filter { parts[it] == wanted }.singleOrNull()
+}
+
 @Singleton
 class SubtitleRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -34,6 +54,7 @@ class SubtitleRepositoryImpl @Inject constructor(
     openSubtitles: OpenSubtitlesProvider,
     podnapisi: PodnapisiProvider,
     subDl: SubDlProvider,
+    private val texts: Texts,
 ) : SubtitleRepository {
 
     private val providers: List<SubtitleProvider> = listOf(openSubtitles, podnapisi, subDl)
@@ -43,7 +64,6 @@ class SubtitleRepositoryImpl @Inject constructor(
             .filter { it.enabled }
             .map { provider ->
                 async {
-                    // Cada proveedor tiene 10 s; si cae uno, el resto sigue.
                     withTimeoutOrNull(PROVIDER_TIMEOUT_MS) {
                         runCatching { provider.search(query) }
                             .onFailure { Log.w(TAG, "${provider.name}: ${it.message}") }
@@ -53,8 +73,8 @@ class SubtitleRepositoryImpl @Inject constructor(
             }
             .awaitAll()
             .flatten()
+            .filterNot { sub -> hasConflictingLanguageName(sub.language, sub.release) }
             .map { sub ->
-                // Parecido con el archivo que se reproduce → más probable que vaya sincronizado.
                 val score = if (sub.release.isNotBlank() && query.fileName != null) {
                     similarity(sub.release, query.fileName!!)
                 } else {
@@ -63,7 +83,11 @@ class SubtitleRepositoryImpl @Inject constructor(
                 sub.copy(matchScore = score)
             }
             .distinctBy { it.provider to it.id }
-            .sortedWith(compareByDescending<ExternalSubtitle> { it.matchScore }.thenBy { it.hearingImpaired })
+            .sortedWith(
+                compareBy<ExternalSubtitle> { hasPartMismatch(it.release, query.fileName) }
+                    .thenByDescending { it.matchScore }
+                    .thenBy { it.hearingImpaired },
+            )
     }
 
     override suspend fun download(subtitle: ExternalSubtitle, query: SubtitleQuery): SubtitleFile =
@@ -74,7 +98,11 @@ class SubtitleRepositoryImpl @Inject constructor(
                 .build()
             val raw = http.client.newCall(request).execute().use { response ->
                 check(response.isSuccessful) { "Descarga fallida (HTTP ${response.code})" }
-                response.body?.bytes() ?: error(tr("Respuesta vacía", "Empty response"))
+                val body = response.body ?: error(texts.get(StringsR.string.data_empty_response))
+                check(body.contentLength() <= SubtitleLimits.DOWNLOAD_BYTES) {
+                    texts.get(StringsR.string.data_the_subtitle_download_is_too_large)
+                }
+                body.byteStream().use { it.readBounded(SubtitleLimits.DOWNLOAD_BYTES) }
             }
 
             val (bytes, ext) = unpack(raw, query)
@@ -87,30 +115,54 @@ class SubtitleRepositoryImpl @Inject constructor(
                 path = file.absolutePath,
                 mimeType = mimeFor(ext),
                 language = subtitle.language,
-                label = "${SubtitleLanguages.label(subtitle.language)} · ${subtitle.provider}" +
+                label = "${texts.subtitleLanguage(subtitle.language)} · ${subtitle.provider}" +
                     if (subtitle.hearingImpaired) " (SDH)" else "",
             )
         }
 
-    /** Zip (SubDL, Podnapisi), gzip (algunos espejos) o texto plano (OpenSubtitles). */
     private fun unpack(raw: ByteArray, query: SubtitleQuery): Pair<ByteArray, String> {
         if (raw.size > 4 && raw[0] == 'P'.code.toByte() && raw[1] == 'K'.code.toByte()) {
             val candidates = mutableListOf<Pair<String, ByteArray>>()
+            var entries = 0
+            var totalBytes = 0
             ZipInputStream(ByteArrayInputStream(raw)).use { zip ->
                 generateSequence { zip.nextEntry }.forEach { entry ->
+                    entries++
+                    check(entries <= SubtitleLimits.ARCHIVE_ENTRIES) {
+                        texts.get(StringsR.string.data_the_zip_contains_too_many_files)
+                    }
                     val ext = entry.name.substringAfterLast('.', "").lowercase()
                     if (!entry.isDirectory && ext in SUPPORTED_EXTENSIONS) {
-                        candidates += entry.name to zip.readBytes()
+                        val bytes = zip.readBounded(SubtitleLimits.SUBTITLE_BYTES)
+                        totalBytes += bytes.size
+                        check(totalBytes <= SubtitleLimits.ARCHIVE_BYTES) {
+                            texts.get(StringsR.string.data_the_decompressed_subtitles_are_too_large)
+                        }
+                        candidates += entry.name to bytes
                     }
                 }
             }
-            check(candidates.isNotEmpty()) { tr("El zip no contiene subtítulos compatibles (srt/ass/vtt)", "The zip has no compatible subtitles (srt/ass/vtt)") }
-            // Packs de temporada: el archivo del episodio concreto.
-            val chosen = episodeMatch(candidates, query) ?: candidates.first()
+            check(candidates.isNotEmpty()) { texts.get(StringsR.string.data_the_zip_has_no_compatible_subtitles_srt) }
+            val episode = episodeMatch(candidates, query)
+            check(query.media.season == null || candidates.size == 1 || episode != null) {
+                texts.get(StringsR.string.data_zip_episode_mismatch, query.media.season.toString(), query.media.episode.toString())
+            }
+            val chosen = episode ?: if (query.media.season == null) {
+                val index = movieArchiveCandidate(candidates.map { it.first }, query.fileName)
+                check(index != null) { texts.get(StringsR.string.data_the_zip_has_ambiguous_movie_subtitles) }
+                candidates[index]
+            } else {
+                candidates.first()
+            }
             return chosen.second to chosen.first.substringAfterLast('.').lowercase()
         }
         if (raw.size > 2 && raw[0] == 0x1f.toByte() && raw[1] == 0x8b.toByte()) {
-            return GZIPInputStream(ByteArrayInputStream(raw)).use { it.readBytes() } to "srt"
+            return GZIPInputStream(ByteArrayInputStream(raw)).use {
+                it.readBounded(SubtitleLimits.SUBTITLE_BYTES)
+            } to "srt"
+        }
+        check(raw.size <= SubtitleLimits.SUBTITLE_BYTES) {
+            texts.get(StringsR.string.data_the_subtitle_is_too_large)
         }
         return raw to guessExtension(raw)
     }
@@ -129,15 +181,11 @@ class SubtitleRepositoryImpl @Inject constructor(
         val head = String(bytes, 0, minOf(bytes.size, 400), Charsets.ISO_8859_1)
         return when {
             head.contains("[Script Info]") -> "ass"
-            head.trimStart('﻿', ' ', '\n', '\r').startsWith("WEBVTT") -> "vtt"
+            head.trimStart('\uFEFF', ' ', '\n', '\r').startsWith("WEBVTT") -> "vtt"
             else -> "srt"
         }
     }
 
-    /**
-     * Muchos .srt en castellano vienen en Windows-1252 (tildes y eñes rotas si se leen como UTF-8).
-     * Se intenta UTF-8 estricto y, si falla, la codificación habitual del idioma.
-     */
     private fun decode(bytes: ByteArray, language: String): String {
         val utf8 = Charsets.UTF_8.newDecoder()
             .onMalformedInput(CodingErrorAction.REPORT)
@@ -147,7 +195,7 @@ class SubtitleRepositoryImpl @Inject constructor(
         } catch (_: CharacterCodingException) {
             String(bytes, Charset.forName(LEGACY_CHARSETS[language] ?: "windows-1252"))
         }
-        return text.removePrefix("﻿")
+        return text.removePrefix("\uFEFF")
     }
 
     private fun mimeFor(ext: String) = when (ext) {

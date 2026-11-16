@@ -3,6 +3,7 @@ package com.shieldstream.tv.data.repository
 import android.content.Context
 import android.content.SharedPreferences
 import com.shieldstream.tv.domain.ProfileRepository
+import com.shieldstream.tv.domain.WatchProgressClear
 import com.shieldstream.tv.domain.WatchProgressRepository
 import com.shieldstream.tv.model.Profile
 import com.shieldstream.tv.model.WatchProgress
@@ -23,32 +24,27 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * Progreso en SharedPreferences: clave → "posiciónMs|duraciónMs|actualizadoMs".
- * Son pocas entradas pequeñas; no compensa meter Room solo para esto.
- *
- * Un archivo por perfil ([prefsNameFor]); al cambiar de perfil se carga el suyo.
- */
 @Singleton
 class WatchProgressRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     profiles: ProfileRepository,
 ) : WatchProgressRepository {
 
+    private data class ActiveStore(val profileId: String, val prefs: SharedPreferences)
+
     @Volatile
-    private var prefs: SharedPreferences = prefsFor(profiles.active.value.id)
+    private var store = storeFor(profiles.active.value.id)
 
     private val _progress = MutableStateFlow(load())
     override val progress: StateFlow<Map<String, WatchProgress>> = _progress.asStateFlow()
 
-    private val _cleared = MutableSharedFlow<String>(extraBufferCapacity = 32)
-    override val cleared: SharedFlow<String> = _cleared.asSharedFlow()
+    private val _cleared = MutableSharedFlow<WatchProgressClear>(extraBufferCapacity = 32)
+    override val cleared: SharedFlow<WatchProgressClear> = _cleared.asSharedFlow()
 
     init {
-        // Cambio de perfil → su progreso ("Seguir viendo", ticks y barras se repintan solos).
         CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate).launch {
             profiles.active.distinctUntilChangedBy { it.id }.drop(1).collect { profile ->
-                prefs = prefsFor(profile.id)
+                store = storeFor(profile.id)
                 _progress.value = load()
             }
         }
@@ -56,49 +52,55 @@ class WatchProgressRepositoryImpl @Inject constructor(
 
     override fun get(key: String): WatchProgress? = _progress.value[key]
 
-    override fun save(key: String, positionMs: Long, durationMs: Long) {
+    override fun save(key: String, positionMs: Long, durationMs: Long, sourceId: String?) {
         if (durationMs <= 0) return
         val entry = WatchProgress(
             positionMs = positionMs.coerceIn(0L, durationMs),
             durationMs = durationMs,
             updatedAt = System.currentTimeMillis(),
+            sourceId = sourceId ?: get(key)?.sourceId,
         )
-        prefs.edit().putString(key, encode(entry)).apply()
+        store.prefs.edit().putString(key, encode(entry)).apply()
         _progress.update { it + (key to entry) }
     }
 
     override fun clear(key: String) {
-        prefs.edit().remove(key).apply()
+        val current = store
+        current.prefs.edit().remove(key).apply()
         _progress.update { it - key }
-        _cleared.tryEmit(key)
+        _cleared.tryEmit(WatchProgressClear(current.profileId, key))
     }
 
     override fun importRemote(entries: Map<String, WatchProgress>) {
         if (entries.isEmpty()) return
-        val editor = prefs.edit()
-        entries.forEach { (key, value) -> editor.putString(key, encode(value)) }
+        val local = _progress.value
+        val merged = entries.mapValues { (key, value) ->
+            value.copy(sourceId = local[key]?.sourceId)
+        }
+        val editor = store.prefs.edit()
+        merged.forEach { (key, value) -> editor.putString(key, encode(value)) }
         editor.apply()
-        _progress.update { it + entries }
+        _progress.update { it + merged }
     }
 
     override fun removeRemote(keys: Collection<String>) {
         if (keys.isEmpty()) return
-        val editor = prefs.edit()
+        val editor = store.prefs.edit()
         keys.forEach { editor.remove(it) }
         editor.apply()
         _progress.update { it - keys.toSet() }
     }
 
+    private fun storeFor(profileId: String) = ActiveStore(profileId, prefsFor(profileId))
+
     private fun prefsFor(profileId: String) = context.getSharedPreferences(prefsNameFor(profileId), Context.MODE_PRIVATE)
 
-    private fun load(): Map<String, WatchProgress> = read(prefs)
+    private fun load(): Map<String, WatchProgress> = read(store.prefs)
 
     companion object {
-        /** El perfil que se crea al actualizar sigue usando el archivo de antes: no se pierde nada. */
         fun prefsNameFor(profileId: String) =
             if (profileId == Profile.DEFAULT_ID) "watch_progress" else "watch_progress_$profileId"
 
-        /** Progreso de cualquier perfil (aunque no sea el activo): lo usa Trakt al enlazar una cuenta. */
         internal fun readAll(context: Context, profileId: String): Map<String, WatchProgress> =
             read(context.getSharedPreferences(prefsNameFor(profileId), Context.MODE_PRIVATE))
 
@@ -107,15 +109,19 @@ class WatchProgressRepositoryImpl @Inject constructor(
                 (value as? String)?.let { decode(it) }?.let { key to it }
             }.toMap()
 
-        private fun encode(p: WatchProgress) = "${p.positionMs}|${p.durationMs}|${p.updatedAt}"
+        private fun encode(p: WatchProgress) = buildString {
+            append(p.positionMs).append('|').append(p.durationMs).append('|').append(p.updatedAt)
+            p.sourceId?.let { append('|').append(it) }
+        }
 
         private fun decode(raw: String): WatchProgress? {
-            val parts = raw.split('|')
-            if (parts.size != 3) return null
+            val parts = raw.split('|', limit = 4)
+            if (parts.size !in 3..4) return null
             return WatchProgress(
                 positionMs = parts[0].toLongOrNull() ?: return null,
                 durationMs = parts[1].toLongOrNull() ?: return null,
                 updatedAt = parts[2].toLongOrNull() ?: return null,
+                sourceId = parts.getOrNull(3)?.takeIf { it.isNotEmpty() },
             )
         }
     }

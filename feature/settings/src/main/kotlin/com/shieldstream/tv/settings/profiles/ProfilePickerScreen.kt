@@ -1,5 +1,9 @@
 package com.shieldstream.tv.settings.profiles
 
+import com.shieldstream.tv.ui.theme.AppColors
+
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.localizedStringResource
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -22,7 +26,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,7 +44,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.shieldstream.tv.model.Profile
-import com.shieldstream.tv.model.tr
+import com.shieldstream.tv.model.ProfileManagement
 import com.shieldstream.tv.ui.R
 import com.shieldstream.tv.ui.component.AppIcons
 import com.shieldstream.tv.ui.component.ProfileAvatar
@@ -53,10 +56,6 @@ import kotlinx.coroutines.delay
 internal val ProfileBackground = Brush.verticalGradient(listOf(Color(0xFF14151F), Color.Black))
 internal val ProfileMuted = Color.White.copy(alpha = 0.55f)
 
-/**
- * "¿Quién está viendo?" (al abrir la app y desde el avatar del menú). Como en Netflix: los perfiles en fila, el
- * enfocado crece con borde blanco, "Añadir perfil" al final y "Administrar perfiles" debajo (lápiz sobre cada uno).
- */
 @Composable
 fun ProfilePickerScreen(
     onSelected: () -> Unit,
@@ -69,13 +68,28 @@ fun ProfilePickerScreen(
         Box(Modifier.fillMaxSize().background(Color.Black))
         return
     }
-    var manage by rememberSaveable { mutableStateOf(false) }
-    // Perfil con PIN: antes de entrar (o de editarlo) se pide el PIN. (perfil, ¿es para editar?)
+    var manage by remember { mutableStateOf(false) }
+    var managementUnlocked by remember { mutableStateOf(false) }
+    var managementAction by remember { mutableStateOf<ManagementAction?>(null) }
+    var managementPinError by remember { mutableStateOf<String?>(null) }
+    val managementPinProfile = ProfileManagement.pinProfile(ready.profiles)
+
+    fun requestManagement(action: ManagementAction) {
+        if (managementPinProfile == null || managementUnlocked) {
+            managementUnlocked = true
+            when (action) {
+                ManagementAction.MANAGE -> manage = true
+                ManagementAction.ADD -> onAdd()
+            }
+        } else {
+            managementPinError = null
+            managementAction = action
+        }
+    }
     var pinFor by remember { mutableStateOf<Pair<Profile, Boolean>?>(null) }
     var pinError by remember { mutableStateOf<String?>(null) }
     val activeRequester = remember { FocusRequester() }
     LaunchedEffect(manage) {
-        // Al arrancar justo tras el salvapantallas la ventana tarda en tener el foco: se insiste unas veces.
         repeat(4) {
             runCatching { activeRequester.requestFocus() }
             delay(150)
@@ -86,7 +100,6 @@ fun ProfilePickerScreen(
         Modifier
             .fillMaxSize()
             .background(ProfileBackground)
-            // En "Administrar", Atrás vuelve a elegir perfil; si no, Atrás hace lo de siempre (salir / volver).
             .onBackKey(enabled = manage) { manage = false },
     ) {
         Row(
@@ -103,7 +116,7 @@ fun ProfilePickerScreen(
             modifier = Modifier.align(Alignment.Center),
         ) {
             Text(
-                if (manage) tr("Administrar perfiles", "Manage profiles") else tr("¿Quién está viendo?", "Who's watching?"),
+                if (manage) localizedStringResource(StringsR.string.settings_manage_profiles) else localizedStringResource(StringsR.string.settings_who_s_watching),
                 color = Color.White,
                 fontSize = 40.sp,
                 fontWeight = FontWeight.Bold,
@@ -116,7 +129,7 @@ fun ProfilePickerScreen(
                         manage = manage,
                         onClick = {
                             when {
-                                profile.locked -> {
+                                profile.locked && !(manage && managementUnlocked) -> {
                                     pinError = null
                                     pinFor = profile to manage
                                 }
@@ -130,21 +143,50 @@ fun ProfilePickerScreen(
                         modifier = if (profile.id == ready.activeId) Modifier.focusRequester(activeRequester) else Modifier,
                     )
                 }
-                if (ready.canAdd) AddTile(onClick = onAdd)
+                if (ready.canAdd) AddTile(onClick = { requestManagement(ManagementAction.ADD) })
             }
             Spacer(Modifier.height(56.dp))
             TvButton(
-                text = if (manage) tr("Listo", "Done") else tr("Administrar perfiles", "Manage profiles"),
+                text = if (manage) localizedStringResource(StringsR.string.settings_done) else localizedStringResource(StringsR.string.settings_manage_profiles),
                 icon = if (manage) AppIcons.Check else AppIcons.Edit,
-                onClick = { manage = !manage },
+                onClick = {
+                    if (manage) manage = false else requestManagement(ManagementAction.MANAGE)
+                },
             )
         }
     }
 
+    val wrongPinMessage = localizedStringResource(StringsR.string.settings_wrong_pin)
+    managementAction?.let { action ->
+        val profile = managementPinProfile ?: return@let
+        PinDialog(
+            title = localizedStringResource(StringsR.string.settings_management_pin),
+            subtitle = localizedStringResource(StringsR.string.settings_management_pin_for, profile.name),
+            error = managementPinError,
+            onPin = { pin ->
+                if (com.shieldstream.tv.model.ProfilePin.matches(profile, pin)) {
+                    managementUnlocked = true
+                    managementAction = null
+                    managementPinError = null
+                    when (action) {
+                        ManagementAction.MANAGE -> manage = true
+                        ManagementAction.ADD -> onAdd()
+                    }
+                } else {
+                    managementPinError = wrongPinMessage
+                }
+            },
+            onDismiss = {
+                managementAction = null
+                managementPinError = null
+            },
+        )
+    }
+
     pinFor?.let { (profile, forEdit) ->
         PinDialog(
-            title = tr("PIN de ${profile.name}", "${profile.name}'s PIN"),
-            subtitle = tr("Escribe el PIN de 4 cifras para entrar", "Enter the 4-digit PIN"),
+            title = localizedStringResource(StringsR.string.settings_profile_pin, profile.name),
+            subtitle = localizedStringResource(StringsR.string.settings_enter_the_4_digit_pin),
             error = pinError,
             onPin = { pin ->
                 if (com.shieldstream.tv.model.ProfilePin.matches(profile, pin)) {
@@ -157,7 +199,7 @@ fun ProfilePickerScreen(
                         onSelected()
                     }
                 } else {
-                    pinError = tr("PIN incorrecto", "Wrong PIN")
+                    pinError = wrongPinMessage
                 }
             },
             onDismiss = {
@@ -168,7 +210,8 @@ fun ProfilePickerScreen(
     }
 }
 
-// 5 perfiles (o 4 + "Añadir") tienen que caber en los 960 dp de ancho de la Shield.
+private enum class ManagementAction { MANAGE, ADD }
+
 private val TileSize = 128.dp
 
 @Composable
@@ -193,7 +236,6 @@ private fun ProfileTile(profile: Profile, manage: Boolean, onClick: () -> Unit, 
         ) {
             ProfileAvatar(initial = profile.initial, avatar = profile.avatar, size = TileSize)
             if (manage) {
-                // Lápiz sobre el avatar oscurecido, como en "Administrar perfiles" de Netflix.
                 Box(
                     Modifier
                         .size(TileSize)
@@ -214,17 +256,17 @@ private fun ProfileTile(profile: Profile, manage: Boolean, onClick: () -> Unit, 
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
         )
-        // Debajo del nombre: Trakt, infantil y candado (con PIN), en una línea pequeña.
         if (profile.traktUser != null || profile.kids || profile.locked) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (profile.traktUser != null) {
-                    Text("Trakt ✓", color = TraktRed.copy(alpha = if (focused) 1f else 0.7f), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    // Green reads as "linked/OK" here; Trakt's brand red looked like a warning.
+                    Text("Trakt ✓", color = AppColors.Success.copy(alpha = if (focused) 1f else 0.75f), fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
                 if (profile.kids) {
-                    Text(tr("Infantil", "Kids"), color = Color(0xFF56CCF2).copy(alpha = if (focused) 1f else 0.75f), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text(localizedStringResource(StringsR.string.settings_kids), color = Color(0xFF56CCF2).copy(alpha = if (focused) 1f else 0.75f), fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
                 if (profile.locked) {
-                    Icon(AppIcons.Lock, contentDescription = tr("Con PIN", "PIN protected"), tint = ProfileMuted, modifier = Modifier.size(14.dp))
+                    Icon(AppIcons.Lock, contentDescription = localizedStringResource(StringsR.string.settings_pin_protected), tint = ProfileMuted, modifier = Modifier.size(14.dp))
                 }
             }
         }
@@ -262,7 +304,7 @@ private fun AddTile(onClick: () -> Unit) {
         }
         Spacer(Modifier.height(16.dp))
         Text(
-            tr("Añadir perfil", "Add profile"),
+            localizedStringResource(StringsR.string.settings_add_profile),
             color = if (focused) Color.White else ProfileMuted,
             fontSize = 20.sp,
             fontWeight = if (focused) FontWeight.Bold else FontWeight.Medium,
@@ -270,5 +312,4 @@ private fun AddTile(onClick: () -> Unit) {
     }
 }
 
-/** Rojo de la marca Trakt (solo para la etiqueta, sin su logo). */
 internal val TraktRed = Color(0xFFED1C24)

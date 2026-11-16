@@ -1,5 +1,11 @@
 package com.shieldstream.tv.player
 
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
+
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.localizedStringResource
+import com.shieldstream.tv.strings.rememberTexts
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
@@ -8,11 +14,11 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.border
 import androidx.compose.ui.text.style.TextOverflow
-import com.shieldstream.tv.model.tr
-import android.view.View
+import com.shieldstream.tv.model.PlaybackVideoInfo
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.view.View
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -22,14 +28,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -80,6 +84,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.shieldstream.tv.ui.component.AppIcons
+import com.shieldstream.tv.ui.component.PlaybackMediaBadges
 import com.shieldstream.tv.ui.component.onBackKey
 import kotlinx.coroutines.delay
 
@@ -92,6 +97,7 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel(),
 ) {
     val player by viewModel.player.collectAsStateWithLifecycle()
+    val videoInfo by viewModel.videoInfo.collectAsStateWithLifecycle()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val title by viewModel.title.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
@@ -99,12 +105,14 @@ fun PlayerScreen(
     val activeExternal by viewModel.activeExternal.collectAsStateWithLifecycle()
     val subtitleTiming by viewModel.subtitleTiming.collectAsStateWithLifecycle()
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
+    val subtitleAppearance by viewModel.subtitleAppearance.collectAsStateWithLifecycle()
     val thumbnailsEnabled by viewModel.seekThumbnails.collectAsStateWithLifecycle()
     val forceSoftwareAudio by viewModel.forceSoftwareAudio.collectAsStateWithLifecycle()
     val autoFrameRate by viewModel.autoFrameRate.collectAsStateWithLifecycle()
     val nextUp by viewModel.nextUp.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val skipPrompt by viewModel.skipPrompt.collectAsStateWithLifecycle()
-    // "Siguiente episodio": se sale a la ficha, que busca las fuentes del siguiente y lo pone.
+    val texts = rememberTexts()
     LaunchedEffect(Unit) { viewModel.goNext.collect { onBack() } }
     LaunchedEffect(notice) {
         if (notice != null) {
@@ -116,15 +124,12 @@ fun PlayerScreen(
     LaunchedEffect(Unit) { viewModel.start() }
     BackHandler(onBack = onBack)
 
-    // Panel Audio/Subtítulos. Registrado después: Atrás lo cierra antes de salir del reproductor.
     var tracksOpen by remember { mutableStateOf(false) }
     BackHandler(enabled = tracksOpen) { tracksOpen = false }
-    // Barra "Sincronizar subtítulos" (solo con subtítulo externo).
     var syncOpen by remember { mutableStateOf(false) }
     BackHandler(enabled = syncOpen) { syncOpen = false }
     LaunchedEffect(activeExternal) { if (activeExternal == null) syncOpen = false }
 
-    // Subtítulo externo cargado en el vídeo → se cierra el panel y se vuelve a la película.
     LaunchedEffect(externalSubs) {
         if (externalSubs is ExternalSubsState.Attached) {
             tracksOpen = false
@@ -132,7 +137,6 @@ fun PlayerScreen(
         }
     }
 
-    // Ciclo de vida del player: liberar en ON_STOP (Home / salvapantallas) y recrear en ON_START.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -146,17 +150,17 @@ fun PlayerScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
 
     // Auto Frame Rate (AFR): adapta la tasa HDMI del televisor a los fps del vídeo para eliminar judder.
-    DisposableEffect(player, autoFrameRate, activity) {
+    DisposableEffect(player, autoFrameRate, activity, viewModel.matchContentFrameRate) {
         val p = player ?: return@DisposableEffect onDispose { }
         val act = activity ?: return@DisposableEffect onDispose { }
+        val afrManager = viewModel.autoFrameRateManager ?: return@DisposableEffect onDispose { }
 
         fun checkAndApplyAfr() {
-            if (!autoFrameRate) return
-            viewModel.autoFrameRateManager.attach(act, p)
+            if (!autoFrameRate || viewModel.matchContentFrameRate) return
+            afrManager.attach(act, p)
         }
 
         // Solo STATE_READY: los eventos de pistas y de tamaño de vídeo se eliminaron a propósito en v1.1.7.
@@ -175,15 +179,14 @@ fun PlayerScreen(
 
         onDispose {
             p.removeListener(listener)
-            viewModel.autoFrameRateManager.detach(act)
-            viewModel.autoFrameRateManager.restoreDefault(act)
+            afrManager.detach(act)
+            afrManager.restoreDefault(act)
         }
     }
 
     val playback = rememberPlaybackState(player)
     var controlsVisible by remember { mutableStateOf(true) }
     var interactions by remember { mutableIntStateOf(0) }
-    // Modo "saltos de 10 s" (ajuste sin miniaturas): aviso "« 10 s" en el centro.
     var seekFeedback by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(seekFeedback) {
         if (seekFeedback != null) {
@@ -192,24 +195,19 @@ fun PlayerScreen(
         }
     }
 
-    // Modo búsqueda (◀▶): el vídeo se pausa y se elige el punto con miniaturas; OK salta ahí, Atrás vuelve.
-    // null = no se está buscando.
     var scrubMs by remember { mutableStateOf<Long?>(null) }
     var resumeAfterScrub by remember { mutableStateOf(false) }
     val scrubbing = scrubMs != null
-    // Dolby Vision perfil 5 (sin capa HDR10/SDR): la capa base sale con colores falsos → sin miniaturas, solo tiempos.
     val mediaUri = remember(player, scrubbing) {
         player?.currentMediaItem?.localConfiguration?.uri
             ?.takeUnless { player?.videoFormat?.codecs?.let { c -> c.startsWith("dvhe.05") || c.startsWith("dvh1.05") } == true }
     }
-    // HDR10 / Dolby Vision (PQ): las miniaturas se pasan a SDR con una LUT (ver SeekThumbnails).
     val pqHdr = remember(player, scrubbing) {
         player?.videoFormat?.let {
             it.colorInfo?.colorTransfer == C.COLOR_TRANSFER_ST2084 || it.sampleMimeType == MimeTypes.VIDEO_DOLBY_VISION
         } ?: false
     }
     val thumbs = rememberSeekThumbnails(mediaUri, pqHdr, active = scrubbing)
-    // Si el reproductor se recrea (vuelta de Home / salvapantallas) se sale del modo búsqueda.
     LaunchedEffect(player) { scrubMs = null }
 
     fun showControls() {
@@ -217,7 +215,6 @@ fun PlayerScreen(
         interactions++
     }
 
-    // Auto-ocultar a los 4 s si se está reproduciendo (en pausa se quedan visibles).
     LaunchedEffect(controlsVisible, interactions, playback.isPlaying) {
         if (controlsVisible && playback.isPlaying) {
             delay(4_000)
@@ -225,10 +222,9 @@ fun PlayerScreen(
         }
     }
 
-    // El foco del D-pad vive en Compose (no en el PlayerView): aquí se traducen las teclas del mando.
     val focusRequester = remember { FocusRequester() }
     // Al entrar en reproducción, al cerrar el panel de pistas o al empezar a correr fotogramas, el foco vuelve a
-    // Compose para el D-pad. `playback.playing` es clave: si la fuente se resolvió asíncronamente y el vídeo
+    // Compose para el D-pad. `playback.isPlaying` es clave: si la fuente se resolvió asíncronamente y el vídeo
     // arranca más tarde, el SurfaceView puede haberse quedado con el foco y hay que reclamarlo de nuevo.
     LaunchedEffect(state, tracksOpen, playback.isPlaying) {
         if (!tracksOpen && state is PlayerUiState.Playing) {
@@ -237,8 +233,6 @@ fun PlayerScreen(
         }
     }
 
-    // "Omitir intro/resumen": 10 s a la vista (como en Nuvio) y luego solo con los controles abiertos. Mientras no se
-    // ve, OK vuelve a ser pausa.
     val skipTarget = (skipPrompt as? SkipPromptUiState.Showing)?.targetMs
     var skipExpired by remember { mutableStateOf(false) }
     LaunchedEffect(skipTarget) {
@@ -253,32 +247,61 @@ fun PlayerScreen(
 
     fun handleKey(event: KeyEvent): Boolean {
         if (event.type != KeyEventType.KeyDown) return false
-        // Con el panel abierto, el D-pad mueve el foco entre pistas: no se intercepta.
-        if (tracksOpen) return false
+        if (event.key == Key.MediaStop) {
+            if (event.nativeKeyEvent.repeatCount == 0) onBack()
+            return true
+        }
         val p = player ?: return false
-        // Tarjeta "Siguiente episodio": OK = ya (Atrás la quita: ver onBackKey abajo).
+
+        fun seekDirectly(stepMs: Long) {
+            val duration = p.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
+            p.seekTo((p.currentPosition + stepMs).coerceIn(0L, duration))
+            seekFeedback = if (stepMs < 0) "« ${-stepMs / 1000} s" else "${stepMs / 1000} s »"
+            showControls()
+        }
+
+        if (tracksOpen || syncOpen) {
+            return when (event.key) {
+                Key.DirectionLeft -> if (syncOpen) {
+                    viewModel.adjustSubtitleOffset(-100)
+                    true
+                } else false
+                Key.DirectionRight -> if (syncOpen) {
+                    viewModel.adjustSubtitleOffset(100)
+                    true
+                } else false
+                Key.DirectionDown -> if (syncOpen) {
+                    viewModel.adjustSubtitleOffset(-1_000)
+                    true
+                } else false
+                Key.DirectionUp -> if (syncOpen) {
+                    viewModel.adjustSubtitleOffset(1_000)
+                    true
+                } else false
+                Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> if (syncOpen) {
+                    viewModel.autoSyncNow()
+                    true
+                } else false
+                Key.MediaPlayPause, Key.Spacebar -> {
+                    if (p.isPlaying) p.pause() else p.play()
+                    true
+                }
+                Key.MediaPlay -> { p.play(); true }
+                Key.MediaPause -> { p.pause(); true }
+                Key.MediaRewind -> { seekDirectly(-seekStepMs(event.nativeKeyEvent.repeatCount)); true }
+                Key.MediaFastForward -> { seekDirectly(seekStepMs(event.nativeKeyEvent.repeatCount)); true }
+                else -> false
+            }
+        }
         val okKey = event.key == Key.DirectionCenter || event.key == Key.Enter || event.key == Key.NumPadEnter
         if (okKey && nextUp is NextUpUiState.Showing && scrubMs == null && !syncOpen) {
             viewModel.playNextNow()
             return true
         }
-        // "Saltar intro / resumen" a la vista: OK salta (como en Netflix); para pausar, Play/Pausa del mando.
         if (okKey && skipVisible && scrubMs == null && !syncOpen) {
             viewModel.skipSegment()
             return true
         }
-        if (syncOpen) {
-            return when (event.key) {
-                Key.DirectionLeft -> { viewModel.adjustSubtitleOffset(-100); true }
-                Key.DirectionRight -> { viewModel.adjustSubtitleOffset(100); true }
-                Key.DirectionDown -> { viewModel.adjustSubtitleOffset(-1_000); true }
-                Key.DirectionUp -> { viewModel.adjustSubtitleOffset(1_000); true }
-                Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> { viewModel.autoSyncNow(); true }
-                Key.MediaPlayPause, Key.Spacebar -> { if (p.isPlaying) p.pause() else p.play(); true }
-                else -> false
-            }
-        }
-        // ◀▶ mueven el punto elegido (no el vídeo): al primer toque se pausa y se entra en modo búsqueda.
         fun scrub(deltaMs: Long) {
             val duration = p.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
             val from = scrubMs ?: run {
@@ -286,7 +309,6 @@ fun PlayerScreen(
                 p.pause()
                 p.currentPosition
             }
-            // Redondeado a la rejilla de miniaturas (10 s): la hora del centro coincide con su fotograma.
             val snapped = Math.round((from + deltaMs).toDouble() / THUMB_SLOT_MS) * THUMB_SLOT_MS
             scrubMs = snapped.coerceIn(0L, duration)
             showControls()
@@ -319,9 +341,7 @@ fun PlayerScreen(
                 if (thumbnailsEnabled) {
                     scrub(-step)
                 } else {
-                    p.seekTo((p.currentPosition - step).coerceAtLeast(0L))
-                    seekFeedback = "« ${step / 1000} s"
-                    showControls()
+                    seekDirectly(-step)
                 }
                 true
             }
@@ -330,10 +350,7 @@ fun PlayerScreen(
                 if (thumbnailsEnabled) {
                     scrub(step)
                 } else {
-                    val duration = p.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
-                    p.seekTo((p.currentPosition + step).coerceAtMost(duration))
-                    seekFeedback = "${step / 1000} s »"
-                    showControls()
+                    seekDirectly(step)
                 }
                 true
             }
@@ -344,7 +361,6 @@ fun PlayerScreen(
                 true
             }
             Key.DirectionUp, Key.Info -> { showControls(); true }
-            // Volumen, Atrás, Home… se dejan pasar al sistema / BackHandler.
             else -> false
         }
     }
@@ -372,38 +388,56 @@ fun PlayerScreen(
             .focusable(enabled = !tracksOpen),
     ) {
         player?.let { exoPlayer ->
+            val displayModeRequest = remember(exoPlayer, viewModel.earlyFrameRate) {
+                viewModel.earlyFrameRate?.let { rate ->
+                    context.findActivity()?.let { activity -> EarlyDisplayModeRequest(activity, rate) }
+                }
+            }
+            LaunchedEffect(displayModeRequest, exoPlayer) {
+                displayModeRequest?.applyAndWait()
+                viewModel.onEarlyDisplayModeReady(exoPlayer)
+            }
+            DisposableEffect(displayModeRequest) {
+                onDispose { displayModeRequest?.restore() }
+            }
+            val playerView = remember(exoPlayer) {
+                PlayerView(context).apply {
+                    useController = false
+                    keepScreenOn = true
+                    isFocusable = false
+                    isFocusableInTouchMode = false
+                    descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                }
+            }
+            DisposableEffect(playerView, exoPlayer) {
+                val matcher = ContentFrameRateMatcher(
+                    playerView = playerView,
+                    player = exoPlayer,
+                    enabled = viewModel.matchContentFrameRate,
+                    initialFrameRate = viewModel.earlyFrameRate,
+                )
+                matcher.attach()
+                onDispose { matcher.detach() }
+            }
             AndroidView(
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        // SurfaceView por defecto: obligatorio para Dolby Vision (TextureView no lo soporta).
-                        useController = false // controles propios en Compose (abajo)
-                        keepScreenOn = true // evita que salte el salvapantallas de Android TV
-                        // El foco del D-pad vive en Compose: ni el PlayerView ni su SurfaceView interno deben robarlo.
-                        isFocusable = false
-                        isFocusableInTouchMode = false
-                        descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
-                    }
-                },
+                factory = { playerView },
                 update = { view ->
                     view.player = exoPlayer
-                    // Refuerzo por si el PlayerView recreó su SurfaceView al recomponer (cambio de modo HDMI o
-                    // de tamaño): cualquier vista interna del reproductor queda fuera del reparto de foco.
                     disableDescendantFocus(view)
-                    // Con subtítulo externo, la pista del archivo seleccionada es solo la referencia: no se muestra.
-                    view.subtitleView?.visibility = if (activeExternal != null) View.GONE else View.VISIBLE
+                    val evaluating = (externalSubs as? ExternalSubsState.Results)?.evaluating == true
+                    view.subtitleView?.applySubtitleAppearance(subtitleAppearance)
+                    view.subtitleView?.visibility = if (activeExternal != null || evaluating) View.GONE else View.VISIBLE
                 },
                 modifier = Modifier.fillMaxSize(),
             )
-            activeExternal?.let { ExternalSubtitleOverlay(exoPlayer, it, subtitleTiming) }
+            activeExternal?.let { ExternalSubtitleOverlay(exoPlayer, it, subtitleTiming, subtitleAppearance) }
         }
 
         if (state == PlayerUiState.Playing) {
-            if (playback.buffering) {
-                CircularProgressIndicator(color = NetflixRed, modifier = Modifier.align(Alignment.Center).size(48.dp))
-            }
             AnimatedVisibility(visible = controlsVisible && !syncOpen, enter = fadeIn(), exit = fadeOut()) {
                 ControlsOverlay(
                     title = title,
+                    videoInfo = videoInfo,
                     playback = playback,
                     scrubMs = scrubMs,
                     thumbs = thumbs,
@@ -432,7 +466,7 @@ fun PlayerScreen(
                 Text(
                     text = it,
                     color = Color.White,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                     modifier = Modifier
                         .align(Alignment.TopCenter)
                         .padding(top = 40.dp)
@@ -452,8 +486,11 @@ fun PlayerScreen(
                     onPickExternal = { sub -> viewModel.downloadExternalSubtitle(sub) },
                     onCloseExternal = { viewModel.resetExternalSubtitles() },
                     externalLabel = activeExternal?.label,
-                    syncDetail = syncStatus.describe().ifBlank { subtitleTiming.describe() },
+                    syncDetail = syncStatus.describe(texts).ifBlank { subtitleTiming.describe(texts) },
+                    appearance = subtitleAppearance,
+                    onAppearanceChange = viewModel::setSubtitleAppearance,
                     onExternalOff = { viewModel.disableExternalSubtitle() },
+                    onManualSubtitleSelection = viewModel::onManualSubtitleSelection,
                     onOpenSync = {
                         tracksOpen = false
                         syncOpen = true
@@ -468,15 +505,13 @@ fun PlayerScreen(
             }
         }
 
-        // Abajo a la derecha, compactos (estilo Netflix): suben un poco si están los controles para no tapar la barra.
         val pillBottom by animateDpAsState(if (controlsVisible) 116.dp else 48.dp, label = "pillBottom")
         val pillModifier = Modifier.align(Alignment.BottomEnd).padding(end = 48.dp, bottom = pillBottom)
         if (state is PlayerUiState.Playing && !tracksOpen) {
             (nextUp as? NextUpUiState.Showing)?.let { next ->
-                // Relleno = cuenta atrás de los últimos 10 s (al llenarse, pasa solo).
                 val target = if (next.secondsLeft <= NEXT_FILL_SECONDS) 1f - next.secondsLeft / NEXT_FILL_SECONDS.toFloat() else 0f
                 val fill by animateFloatAsState(target, animationSpec = tween(500, easing = LinearEasing), label = "nextFill")
-                PlayerPill(tr("Siguiente episodio", "Next episode"), AppIcons.SkipNext, fill, pillModifier)
+                PlayerPill(localizedStringResource(StringsR.string.player_next_episode), AppIcons.SkipNext, fill, pillModifier)
             }
             if (skipVisible) {
                 (skipPrompt as? SkipPromptUiState.Showing)?.let { skip ->
@@ -494,15 +529,9 @@ fun PlayerScreen(
     }
 }
 
-/** Cuántos segundos del final se ven como relleno en "Siguiente episodio". */
 private const val NEXT_FILL_SECONDS = 10
-/** Tiempo que "Omitir intro" se ve sin abrir los controles. */
 private const val SKIP_VISIBLE_MS = 10_000L
 
-/**
- * Botón compacto del reproductor ("Omitir intro", "Siguiente episodio"): píldora oscura con borde blanco.
- * [fill] (0..1) pinta por detrás el avance de la cuenta atrás. Se activa con OK (ver handleKey).
- */
 @Composable
 private fun PlayerPill(text: String, icon: ImageVector, fill: Float?, modifier: Modifier = Modifier) {
     val shape = RoundedCornerShape(50)
@@ -519,11 +548,10 @@ private fun PlayerPill(text: String, icon: ImageVector, fill: Float?, modifier: 
     ) {
         Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(8.dp))
-        Text(text, color = Color.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold))
+        Text(text, color = Color.White, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
     }
 }
 
-/** Mantener pulsado acelera el salto: 10 s → 30 s → 60 s. */
 private fun seekStepMs(repeatCount: Int): Long = when {
     repeatCount > 20 -> 60_000L
     repeatCount > 5 -> 30_000L
@@ -533,7 +561,6 @@ private fun seekStepMs(repeatCount: Int): Long = when {
 @Stable
 private class PlaybackState {
     var isPlaying by mutableStateOf(false)
-    var buffering by mutableStateOf(false)
     var positionMs by mutableLongStateOf(0L)
     var durationMs by mutableLongStateOf(0L)
     var bufferedMs by mutableLongStateOf(0L)
@@ -548,9 +575,6 @@ private fun rememberPlaybackState(player: ExoPlayer?): PlaybackState {
                 state.isPlaying = isPlaying
             }
 
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                state.buffering = playbackState == Player.STATE_BUFFERING
-            }
         }
         player?.addListener(listener)
         state.isPlaying = player?.isPlaying == true
@@ -572,6 +596,7 @@ private fun rememberPlaybackState(player: ExoPlayer?): PlaybackState {
 @Composable
 private fun ControlsOverlay(
     title: String,
+    videoInfo: PlaybackVideoInfo?,
     playback: PlaybackState,
     scrubMs: Long?,
     thumbs: SeekThumbnails?,
@@ -585,12 +610,21 @@ private fun ControlsOverlay(
                 .height(150.dp)
                 .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.85f), Color.Transparent))),
         )
-        Text(
-            text = title,
-            color = Color.White,
-            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-            modifier = Modifier.align(Alignment.TopStart).padding(start = 48.dp, top = 32.dp, end = 48.dp),
-        )
+        Column(
+            Modifier.align(Alignment.TopStart).padding(start = 48.dp, top = 28.dp, end = 48.dp),
+        ) {
+            Text(
+                text = title,
+                color = Color.White,
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            videoInfo?.let {
+                Spacer(Modifier.height(8.dp))
+                PlaybackMediaBadges(it)
+            }
+        }
 
         Column(
             Modifier
@@ -608,7 +642,7 @@ private fun ControlsOverlay(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     imageVector = if (playback.isPlaying) AppIcons.Pause else AppIcons.Play,
-                    contentDescription = if (playback.isPlaying) tr("Pausa", "Pause") else tr("Reproducir", "Play"),
+                    contentDescription = if (playback.isPlaying) localizedStringResource(StringsR.string.player_pause) else localizedStringResource(StringsR.string.player_play),
                     tint = Color.White,
                     modifier = Modifier.size(34.dp),
                 )
@@ -621,9 +655,9 @@ private fun ControlsOverlay(
                 Spacer(Modifier.weight(1f))
                 Text(
                     text = when {
-                        scrubMs != null -> tr("OK ir aquí · Atrás volver", "OK jump here · Back return")
-                        thumbnailsEnabled -> tr("OK pausa · ◀ ▶ buscar · ▼ Audio y subtítulos", "OK pause · ◀ ▶ seek · ▼ Audio & subtitles")
-                        else -> tr("OK pausa · ◀ ▶ 10 s · ▼ Audio y subtítulos", "OK pause · ◀ ▶ 10 s · ▼ Audio & subtitles")
+                        scrubMs != null -> localizedStringResource(StringsR.string.player_ok_jump_here_back_return)
+                        thumbnailsEnabled -> localizedStringResource(StringsR.string.player_ok_pause_seek_audio_subtitles)
+                        else -> localizedStringResource(StringsR.string.player_ok_pause_10_s_audio_subtitles)
                     },
                     color = Color.White.copy(alpha = 0.5f),
                     style = MaterialTheme.typography.bodySmall,
@@ -639,25 +673,32 @@ private fun ControlsOverlay(
     }
 }
 
+/**
+ * Fraction of [durationMs] covered by [ms], or null while the duration is unknown (0 or less).
+ * Without this guard an unknown duration made any position render as a full bar.
+ */
+internal fun seekFraction(ms: Long, durationMs: Long): Float? =
+    if (durationMs > 0) (ms.toFloat() / durationMs).coerceIn(0f, 1f) else null
+
 @Composable
 private fun SeekBar(playback: PlaybackState, positionMs: Long) {
-    val duration = playback.durationMs.coerceAtLeast(1L)
-    val played = (positionMs.toFloat() / duration).coerceIn(0f, 1f)
-    val buffered = (playback.bufferedMs.toFloat() / duration).coerceIn(0f, 1f)
+    val played = seekFraction(positionMs, playback.durationMs)
+    val buffered = seekFraction(playback.bufferedMs, playback.durationMs)
     BoxWithConstraints(Modifier.fillMaxWidth().height(14.dp), contentAlignment = Alignment.CenterStart) {
         Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.25f)))
-        Box(Modifier.fillMaxWidth(buffered).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.45f)))
-        Box(Modifier.fillMaxWidth(played).height(4.dp).clip(RoundedCornerShape(2.dp)).background(NetflixRed))
-        Box(
-            Modifier
-                .offset(x = maxWidth * played - 7.dp)
-                .size(14.dp)
-                .clip(CircleShape)
-                .background(NetflixRed),
-        )
+        if (played != null && buffered != null) {
+            Box(Modifier.fillMaxWidth(buffered).height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.45f)))
+            Box(Modifier.fillMaxWidth(played).height(4.dp).clip(RoundedCornerShape(2.dp)).background(NetflixRed))
+            Box(
+                Modifier
+                    .offset(x = maxWidth * played - 7.dp)
+                    .size(14.dp)
+                    .clip(CircleShape)
+                    .background(NetflixRed),
+            )
+        }
     }
 }
-
 
 @Composable
 private fun StatusOverlay(title: String, message: String, loading: Boolean) {
@@ -688,18 +729,15 @@ private fun StatusOverlay(title: String, message: String, loading: Boolean) {
         )
         if (!loading) {
             Spacer(Modifier.height(16.dp))
-            Text(tr("Pulsa Atrás para elegir otra fuente", "Press Back to pick another source"), color = Color(0xFFB3B3B3), style = MaterialTheme.typography.bodyMedium)
+            Text(localizedStringResource(StringsR.string.player_press_back_to_pick_another_source), color = Color(0xFFB3B3B3), style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
 
-private fun Context.findActivity(): Activity? {
-    var ctx = this
-    while (ctx is ContextWrapper) {
-        if (ctx is Activity) return ctx
-        ctx = ctx.baseContext
-    }
-    return null
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 /**

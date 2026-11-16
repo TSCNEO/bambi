@@ -1,6 +1,7 @@
 package com.shieldstream.tv.home
 
-import com.shieldstream.tv.model.tr
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.Texts
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.shieldstream.tv.domain.CatalogRepository
@@ -29,9 +30,9 @@ sealed interface SearchUiState {
 class SearchViewModel @Inject constructor(
     private val catalogRepository: CatalogRepository,
     private val settings: SettingsRepository,
+    private val texts: Texts,
 ) : ViewModel() {
 
-    /** Distribución del teclado en pantalla (se recuerda): QWERTY o alfabético. */
     val qwerty: StateFlow<Boolean> = settings.searchQwerty.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     fun toggleKeyboardLayout() {
@@ -60,7 +61,6 @@ class SearchViewModel @Inject constructor(
 
     fun clear() = setQuery("")
 
-    /** Texto completo (teclado del sistema / dictado por voz). */
     fun setQuery(value: String) {
         _query.value = value
         searchJob?.cancel()
@@ -69,7 +69,6 @@ class SearchViewModel @Inject constructor(
             _uiState.value = SearchUiState.Suggestions(suggestions)
             return
         }
-        // Debounce: no se lanza una búsqueda por cada tecla del teclado en pantalla.
         searchJob = viewModelScope.launch {
             delay(450)
             _uiState.value = SearchUiState.Loading
@@ -77,7 +76,7 @@ class SearchViewModel @Inject constructor(
                 .onSuccess { items ->
                     _uiState.value = if (items.isEmpty()) SearchUiState.Empty(q) else SearchUiState.Results(q, items)
                 }
-                .onFailure { e -> _uiState.value = SearchUiState.Error(e.message ?: tr("Error en la búsqueda", "Search error")) }
+                .onFailure { e -> _uiState.value = SearchUiState.Error(e.message ?: texts.get(StringsR.string.home_search_error)) }
         }
     }
 }

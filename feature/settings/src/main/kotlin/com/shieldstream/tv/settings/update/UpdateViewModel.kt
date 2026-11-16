@@ -18,7 +18,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import javax.inject.Inject
 
-/** Lo que pinta el aviso de versión nueva (al abrir la app). */
 sealed interface UpdatePromptUiState {
     data object Hidden : UpdatePromptUiState
     data class Visible(val state: UpdateState) : UpdatePromptUiState
@@ -30,10 +29,8 @@ class UpdateViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
-    /** Estado completo (tarjeta de Ajustes). */
     val state: StateFlow<UpdateState> = updates.state
 
-    /** El aviso sale con versión nueva (o descargando / instalando) mientras no se diga "Ahora no". */
     val prompt: StateFlow<UpdatePromptUiState> = combine(updates.state, updates.promptDismissed) { s, dismissed ->
         val relevant = when (s) {
             is UpdateState.Available, is UpdateState.Downloading,
@@ -50,10 +47,6 @@ class UpdateViewModel @Inject constructor(
 
     fun later() = updates.dismissPrompt()
 
-    /**
-     * De vuelta en la app (tras la pantalla del permiso): si faltaba el permiso y ya está dado, se sigue solo
-     * con la descarga; si no se concedió, se queda igual esperando al usuario.
-     */
     fun onResumed() {
         if (updates.state.value !is UpdateState.NeedsPermission) return
         if (canRequestPackageInstalls()) updates.downloadAndInstall()

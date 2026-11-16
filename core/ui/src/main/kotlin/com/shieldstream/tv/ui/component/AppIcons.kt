@@ -2,13 +2,12 @@ package com.shieldstream.tv.ui.component
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.unit.dp
 
-/**
- * Iconos propios (paths de Material Icons, Apache 2.0) para no depender de material-icons-extended.
- */
 object AppIcons {
     val Search = icon(
         "search",
@@ -59,7 +58,6 @@ object AppIcons {
         "M12,17.27L18.18,21l-1.64,-7.03L22,9.24l-7.19,-0.61L12,2 9.19,8.63 2,9.24l5.46,4.73L5.82,21z",
     )
 
-    // Perfiles
     val Edit = icon(
         "edit",
         "M3,17.25V21h3.75L17.81,9.94l-3.75,-3.75L3,17.25zM20.71,7.04c0.39,-0.39 0.39,-1.02 0,-1.41l-2.34,-2.34" +
@@ -68,6 +66,14 @@ object AppIcons {
     val Add = icon("add", "M19,13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z")
     val Check = icon("check", "M9,16.17L4.83,12l-1.42,1.41L9,19 21,7l-1.41,-1.41z")
     val Lock = icon("lock", "M18,8h-1V6c0,-2.76 -2.24,-5 -5,-5S7,3.24 7,6v2H6c-1.1,0 -2,0.9 -2,2v10c0,1.1 0.9,2 2,2h12c1.1,0 2,-0.9 2,-2V10c0,-1.1 -0.9,-2 -2,-2zM12,17c-1.1,0 -2,-0.9 -2,-2s0.9,-2 2,-2 2,0.9 2,2 -0.9,2 -2,2zM15.1,8H8.9V6c0,-1.71 1.39,-3.1 3.1,-3.1 1.71,0 3.1,1.39 3.1,3.1v2z")
+    val Hdr = icon(
+        "hdr",
+        "M19,4H5C3.89,4 3,4.9 3,6v12c0,1.1 0.89,2 2,2h14c1.1,0 2,-0.9 2,-2V6C21,4.9 20.1,4 19,4zM11,15H9.5v-2h-2v2H6V9h1.5v2.5h2V9H11V15zM18,14c0,0.55 -0.45,1 -1,1h-4V9h4c0.55,0 1,0.45 1,1V14zM16.5,10.5h-2v3h2V10.5z",
+    )
+    val Memory = icon(
+        "memory",
+        "M15,9H9v6h6V9zM19,11h2v2h-2v2h-2v2h-2v2h-2v-2h-2v2H9v-2H7v-2H5v-2h2v-2H5v-2h2V9H5V7h2V5h2V3h2v2h2V3h2v2h2v2h2v2h-2v2zM17,7H7v10h10V7z",
+    )
     val SkipNext = icon("skip_next", "M6,18l8.5,-6L6,6v12zM16,6v12h2V6h-2z")
     val FastForward = icon("fast_forward", "M4,18l8.5,-6L4,6v12zM13,6v12l8.5,-6L13,6z")
 
@@ -81,5 +87,62 @@ object AppIcons {
         ).addPath(
             pathData = addPathNodes(path),
             fill = SolidColor(Color.White),
+        ).build()
+}
+
+/**
+ * Outline icons for the navigation rail. Drawn as strokes on a 24-unit grid so they read as thin
+ * lines next to the filled icons used inside screens.
+ */
+object LineIcons {
+    val Search = line("line_search", "M17,11A6,6 0,1 1,5,11A6,6 0,1 1,17,11Z M15.5,15.5L20,20")
+    val Home = line("line_home", "M4,10.5L12,4L20,10.5V19a1,1 0,0 1,-1,1H15V14H9v6H5a1,1 0,0 1,-1,-1Z")
+    val Movie = line(
+        "line_movie",
+        "M5,4H19a1,1 0,0 1,1,1V19a1,1 0,0 1,-1,1H5a1,1 0,0 1,-1,-1V5a1,1 0,0 1,1,-1Z " +
+            "M8,4V20 M16,4V20 M4,9H8 M4,15H8 M16,9H20 M16,15H20",
+    )
+    val Tv = line(
+        "line_tv",
+        "M4,5H20a1,1 0,0 1,1,1V16a1,1 0,0 1,-1,1H4a1,1 0,0 1,-1,-1V6a1,1 0,0 1,1,-1Z M8,20H16 M12,17V20",
+    )
+    val Episodes = line(
+        "line_episodes",
+        "M9,4H19a1,1 0,0 1,1,1V14a1,1 0,0 1,-1,1H9a1,1 0,0 1,-1,-1V5a1,1 0,0 1,1,-1Z " +
+            "M4,8V19a1,1 0,0 0,1,1H16 M12.25,6.75L16.5,9.5L12.25,12.25Z",
+    )
+    val Eye = line(
+        "line_eye",
+        "M2,12C4.2,7.5 7.7,5 12,5C16.3,5 19.8,7.5 22,12C19.8,16.5 16.3,19 12,19C7.7,19 4.2,16.5 2,12Z " +
+            "M15,12A3,3 0,1 1,9 12A3,3 0,0 1,15 12Z",
+    )
+    val Star = line(
+        "line_star",
+        "M12,17.27L18.18,21L16.54,13.97L22,9.24L14.81,8.63L12,2L9.19,8.63L2,9.24L7.46,13.97L5.82,21Z",
+    )
+    val Close = line("line_close", "M6,6L18,18M18,6L6,18")
+    val Delete = line("line_delete", "M4,7H20M9,7V4H15V7M6,7L7,21H17L18,7M10,11V17M14,11V17")
+    val Exit = line("line_exit", "M10,5H5V19H10M14,8L18,12L14,16M18,12H9")
+    val Bookmark = line("line_bookmark", "M7,4H17a1,1 0,0 1,1,1V20L12,16L6,20V5a1,1 0,0 1,1,-1Z")
+    val Settings = line(
+        "line_settings",
+        "M4,7H12 M16,7H20 M16,7A2,2 0,1 1,12,7A2,2 0,1 1,16,7Z " +
+            "M4,17H7 M11,17H20 M11,17A2,2 0,1 1,7,17A2,2 0,1 1,11,17Z",
+    )
+
+    private fun line(name: String, path: String): ImageVector =
+        ImageVector.Builder(
+            name = name,
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f,
+        ).addPath(
+            pathData = addPathNodes(path),
+            fill = null,
+            stroke = SolidColor(Color.White),
+            strokeLineWidth = 1.6f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round,
         ).build()
 }

@@ -1,11 +1,12 @@
 package com.shieldstream.tv.domain
 
 import com.shieldstream.tv.model.AppLanguage
+import com.shieldstream.tv.model.DeviceOptimization
+import com.shieldstream.tv.model.SourceExclusions
+import com.shieldstream.tv.model.SubtitleAppearance
+import com.shieldstream.tv.model.SubtitlePreference
 import kotlinx.coroutines.flow.Flow
 
-/**
- * Persistencia segura de la configuración de la app (token RD, proveedor de catálogo).
- */
 interface SettingsRepository {
     val token: Flow<String?>
     suspend fun setToken(token: String?)
@@ -13,41 +14,72 @@ interface SettingsRepository {
     val catalogProvider: Flow<CatalogProvider>
     suspend fun setCatalogProvider(provider: CatalogProvider)
 
-    /** Máximo buffer del reproductor en segundos (50..100). */
+    val deviceOptimization: Flow<DeviceOptimization>
+    suspend fun setDeviceOptimization(optimization: DeviceOptimization)
+
     val maxBufferSeconds: Flow<Int>
     suspend fun setMaxBufferSeconds(seconds: Int)
 
-    /** ◀▶ en el reproductor: true = búsqueda con miniaturas; false = saltos directos de 10 s (como antes). */
+    val lightweightUi: Flow<Boolean>
+    val lightweightUiEnabled: Boolean
+    suspend fun setLightweightUi(enabled: Boolean)
+
+    /** Blur the backdrop behind Home rows. App-wide; on by default. */
+    /** Intro de Bambi cada vez que se abre la app (si no, solo al arrancar o cuando hay que recargar el Inicio). */
+    val introAlways: Flow<Boolean>
+    val introAlwaysEnabled: Boolean
+    suspend fun setIntroAlways(enabled: Boolean)
+
+    val softBackdrops: Flow<Boolean>
+    val softBackdropsEnabled: Boolean
+    suspend fun setSoftBackdrops(enabled: Boolean)
+
+    /** Load full-screen backdrops at TMDB's original size. App-wide; off by default. */
+    val highResBackdrops: Flow<Boolean>
+    val highResBackdropsEnabled: Boolean
+    suspend fun setHighResBackdrops(enabled: Boolean)
+
     val seekThumbnails: Flow<Boolean>
     suspend fun setSeekThumbnails(enabled: Boolean)
 
-    /** Idioma de la app. Es fijo mientras la app está abierta: tras [setLanguage] hay que reiniciarla. */
     val language: AppLanguage
     suspend fun setLanguage(language: AppLanguage)
 
-    /** "Castellano primero": las fuentes con audio en español arriba. Por defecto, sí si la app está en español. */
     val spanishFirst: Flow<Boolean>
     suspend fun setSpanishFirst(enabled: Boolean)
 
-    /** Panel de Fuentes: enseñar solo las que dicen traer audio en español (botón del propio panel). */
     val spanishOnlySources: Flow<Boolean>
     suspend fun setSpanishOnlySources(enabled: Boolean)
 
-    /** Series: tarjeta "Siguiente episodio" en los créditos y paso automático al terminar (por defecto, sí). */
+    val subtitlePreference: Flow<SubtitlePreference>
+    suspend fun setSubtitlePreference(preference: SubtitlePreference)
+
+    val subtitleAppearance: Flow<SubtitleAppearance>
+    suspend fun setSubtitleAppearance(appearance: SubtitleAppearance)
+
+    val experimentalSubtitleSync: Flow<Boolean>
+    suspend fun setExperimentalSubtitleSync(enabled: Boolean)
+
+    val matchContentFrameRate: Flow<Boolean>
+    suspend fun setMatchContentFrameRate(enabled: Boolean)
+
     val autoNextEpisode: Flow<Boolean>
     suspend fun setAutoNextEpisode(enabled: Boolean)
 
-    /** Teclado de Buscar: true = QWERTY; false = alfabético (ABC…), el de siempre. */
     val searchQwerty: Flow<Boolean>
     suspend fun setSearchQwerty(enabled: Boolean)
 
-    /** Botones de categoría del Inicio OCULTOS (por nombre de Category). Vacío = se ven todos. */
     val hiddenCategories: Flow<Set<String>>
     suspend fun setHiddenCategories(names: Set<String>)
 
-    /** Buscadores de fuentes activados (por defecto, todos). */
+    val homeRowItemLimit: Flow<Int>
+    suspend fun setHomeRowItemLimit(limit: Int)
+
     val sourceProviders: Flow<Set<SourceProvider>>
     suspend fun setSourceProviders(providers: Set<SourceProvider>)
+
+    val sourceExclusions: Flow<SourceExclusions>
+    suspend fun setSourceExclusions(exclusions: SourceExclusions)
 
     /** Servicio debrid en uso (Real-Debrid por defecto). */
     val debridService: Flow<DebridService>
@@ -86,4 +118,11 @@ interface SettingsRepository {
 
     val isRelayVip: Flow<Boolean>
     suspend fun setIsRelayVip(vip: Boolean)
+
+    companion object {
+        const val DEFAULT_HOME_ROW_ITEM_LIMIT = 30
+        const val MIN_HOME_ROW_ITEM_LIMIT = 10
+        const val MAX_HOME_ROW_ITEM_LIMIT = 100
+        const val HOME_ROW_ITEM_LIMIT_STEP = 10
+    }
 }

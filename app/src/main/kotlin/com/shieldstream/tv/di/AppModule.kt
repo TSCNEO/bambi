@@ -4,6 +4,9 @@ import com.shieldstream.tv.BuildConfig
 import com.shieldstream.tv.domain.SelectedContentHolder
 import com.shieldstream.tv.domain.TraktCredentials
 import com.shieldstream.tv.domain.AppVersion
+import com.shieldstream.tv.domain.IthilConfig
+import com.shieldstream.tv.domain.IthilDownloadScheduler
+import com.shieldstream.tv.IthilLibraryScheduler
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -18,14 +21,12 @@ object AppModule {
     @Singleton
     fun provideSelectedContentHolder(): SelectedContentHolder = SelectedContentHolder()
 
-    /** App "Bambi" en Trakt (local.properties → BuildConfig). Vacío = Trakt desactivado en esta compilación. */
-    /** Versión instalada y repositorio de GitHub del que salen las actualizaciones. */
     @Provides
     @Singleton
     fun provideAppVersion(): AppVersion =
         AppVersion(
             name = BuildConfig.VERSION_NAME,
-            isDebug = BuildConfig.DEBUG,
+            isDebug = BuildConfig.DEBUG || BuildConfig.APPLICATION_ID.endsWith(".debug"),
             updateRepo = "TSCNEO/bambi",
             upstreamVersion = BuildConfig.UPSTREAM_VERSION,
             apkName = BuildConfig.UPDATE_APK_NAME,
@@ -35,4 +36,17 @@ object AppModule {
     @Singleton
     fun provideTraktCredentials(): TraktCredentials =
         TraktCredentials(BuildConfig.TRAKT_CLIENT_ID, BuildConfig.TRAKT_CLIENT_SECRET, BuildConfig.TRAKT_REDIRECT_URI)
+
+    @Provides
+    @Singleton
+    fun provideIthilConfig(): IthilConfig =
+        IthilConfig(
+            BuildConfig.ITHIL_METADATA_URL,
+            BuildConfig.ITHIL_INDEX_KEY,
+            BuildConfig.ITHIL_ARCHIVE_PREFIX,
+        )
+
+    @Provides
+    @Singleton
+    fun provideIthilDownloadScheduler(scheduler: IthilLibraryScheduler): IthilDownloadScheduler = scheduler
 }
