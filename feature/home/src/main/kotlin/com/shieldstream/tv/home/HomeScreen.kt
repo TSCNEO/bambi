@@ -1,9 +1,16 @@
 package com.shieldstream.tv.home
 
+import com.shieldstream.tv.ui.theme.AppColors
+import com.shieldstream.tv.ui.theme.AppShapes
+import com.shieldstream.tv.ui.theme.AppSpacing
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.localizedStringResource
 import com.shieldstream.tv.model.Lang
-import com.shieldstream.tv.model.tr
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.ui.graphics.graphicsLayer
@@ -16,16 +23,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.animation.Crossfade
+import com.shieldstream.tv.ui.theme.DisplayFont
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -43,6 +51,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusTarget
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
@@ -52,52 +61,74 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
 import com.shieldstream.tv.model.CatalogItem
 import com.shieldstream.tv.model.CatalogRow
 import com.shieldstream.tv.model.Category
+import com.shieldstream.tv.model.ContinueInfo
 import com.shieldstream.tv.model.FeaturedItem
+import com.shieldstream.tv.model.Episode
+import com.shieldstream.tv.strings.localizedCode
 import com.shieldstream.tv.model.HomeFilter
 import com.shieldstream.tv.model.MediaType
 import com.shieldstream.tv.model.RowStyle
+import com.shieldstream.tv.ui.component.ActionMenuDialog
+import com.shieldstream.tv.ui.component.ActionMenuItem
+import com.shieldstream.tv.ui.component.AppIcons
 import com.shieldstream.tv.ui.component.ContinueCard
-import com.shieldstream.tv.ui.component.PosterCard
+import com.shieldstream.tv.ui.component.LineIcons
+import com.shieldstream.tv.ui.component.NewEpisodeCard
+import com.shieldstream.tv.ui.component.CatalogPosterCard
 import com.shieldstream.tv.ui.component.PosterWidth
 import com.shieldstream.tv.ui.component.ProvidePivotScroll
 import com.shieldstream.tv.ui.component.Top10Card
 import com.shieldstream.tv.ui.component.TvButton
+import com.shieldstream.tv.ui.component.LabeledPosterCard
 import com.shieldstream.tv.ui.component.firstVirtualIndex
+import com.shieldstream.tv.ui.component.formatEpisodeDate
 import com.shieldstream.tv.ui.component.loopingItems
 import com.shieldstream.tv.ui.component.onBackKey
+import com.shieldstream.tv.ui.component.SoftBackdropImage
 import com.shieldstream.tv.ui.component.rememberLoopingRowState
+import com.shieldstream.tv.ui.component.requestFocusWithRetry
 import com.shieldstream.tv.ui.component.shouldLoop
-import com.shieldstream.tv.ui.theme.DisplayFont
+import com.shieldstream.tv.ui.theme.LocalLightweightUi
+import com.shieldstream.tv.ui.theme.LocalSoftBackdrops
+import com.shieldstream.tv.ui.theme.LocalHighResBackdrops
+import com.shieldstream.tv.model.BackdropUrls
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.Snapshot
 import java.util.Locale
 
-private val ContentStart = 48.dp
+private val ContentStart = AppSpacing.ScreenEdge
+private val RowBackground = Color.Black
 
-/**
- * Inicio / Series / Películas. Dos modos:
- *  - Portada (arriba): menú superior, destacados de la semana y botones de categoría.
- *  - Filas (al bajar): fondo e información del título enfocado + filas (en bucle).
- * ▼ desde las categorías → filas. ▲ desde la primera fila o Atrás → portada.
- */
+internal enum class UpNextBadge { UP_NEXT, NEW_EPISODE, NEW_SEASON }
+
+internal fun upNextBadge(info: com.shieldstream.tv.model.UpNextInfo?): UpNextBadge = when {
+    info?.isNewEpisode == true && info.isNewSeason -> UpNextBadge.NEW_SEASON
+    info?.isNewEpisode == true -> UpNextBadge.NEW_EPISODE
+    else -> UpNextBadge.UP_NEXT
+}
+
 @Composable
 fun HomeScreen(
     filter: HomeFilter,
     onItemClick: (CatalogItem) -> Unit,
+    onContinueClick: (CatalogItem, ContinueInfo) -> Unit,
+    onNewEpisodeClick: (CatalogItem, Episode) -> Unit,
+    onUpNextClick: (CatalogItem, Episode) -> Unit,
     onOpenCategory: (Category) -> Unit,
+    onContentReady: () -> Unit = {},
     topBar: @Composable (Modifier) -> Unit,
     topBarRequester: FocusRequester,
     focusTopBar: () -> Unit,
@@ -110,9 +141,7 @@ fun HomeScreen(
     val hidden by viewModel.hiddenCategories.collectAsStateWithLifecycle()
 
     when (val s = state) {
-        // Mismo fondo que la portada para que al terminar de cargar no haya "salto" de color.
         HomeUiState.Loading -> Column(Modifier.fillMaxSize().background(BillboardBackground)) {
-            // Con el menú visible mientras carga (al cambiar de pestaña el foco se queda en él).
             topBar(Modifier)
             LaunchedEffect(Unit) {
                 if (preferTopBarFocus) {
@@ -122,7 +151,6 @@ fun HomeScreen(
             }
             BillboardSkeleton()
         }
-        // Con el menú arriba: si falta una clave (instalación nueva), la rueda de Ajustes queda a mano.
         is HomeUiState.Error -> Column(Modifier.fillMaxSize().background(BillboardBackground)) {
             topBar(Modifier)
             HomeError(
@@ -131,30 +159,52 @@ fun HomeScreen(
                 modifier = Modifier.fillMaxWidth().weight(1f),
             )
         }
-        is HomeUiState.Content -> HomeContent(
+        is HomeUiState.Content -> {
+            LaunchedEffect(Unit) { onContentReady() }
+            HomeContent(
             rows = s.rows,
             featured = s.featured,
             categories = remember(filter, hidden) {
                 when {
-                    // Perfil infantil: solo Infantiles y Para toda la familia (no se pueden ocultar).
                     viewModel.kidsProfile -> Category.forFilter(filter).filter { it in Category.KIDS_SAFE }
-                    // Si se ocultaran todas las de esta pestaña, se enseñan todas (la fila de botones no puede quedar vacía).
                     else -> Category.forFilter(filter).filter { it.name !in hidden }.ifEmpty { Category.forFilter(filter) }
                 }
             },
-            onItemClick = onItemClick,
+            onItemClick = { item ->
+                viewModel.cancelBackgroundPrefetch()
+                onItemClick(item)
+            },
+            onContinueClick = { item, info ->
+                viewModel.cancelBackgroundPrefetch()
+                onContinueClick(item, info)
+            },
+            onNewEpisodeClick = { item, episode ->
+                viewModel.cancelBackgroundPrefetch()
+                onNewEpisodeClick(item, episode)
+            },
+            onUpNextClick = { item, episode ->
+                viewModel.cancelBackgroundPrefetch()
+                onUpNextClick(item, episode)
+            },
             onOpenCategory = onOpenCategory,
             onRemoveContinue = viewModel::removeFromContinue,
+            onRemoveMyList = viewModel::removeFromMyList,
+            onMarkUpNextWatched = viewModel::markUpNextWatched,
+            onRemoveUpNext = viewModel::removeUpNext,
             topBar = topBar,
             topBarRequester = topBarRequester,
             focusTopBar = focusTopBar,
             preferTopBarFocus = preferTopBarFocus,
             onTopBarFocusConsumed = onTopBarFocusConsumed,
-        )
+            )
+        }
     }
 }
 
 private enum class TopFocus { HERO, CHIPS }
+private data class ItemMenu(val row: CatalogRow, val virtual: Int, val item: CatalogItem)
+private data class UpNextMenu(val row: CatalogRow, val virtual: Int, val item: CatalogItem, val episode: Episode)
+private data class PendingFocus(val rowId: String, val itemKey: String?, val fallbackKey: String)
 
 @Composable
 private fun HomeContent(
@@ -162,51 +212,83 @@ private fun HomeContent(
     featured: List<FeaturedItem>,
     categories: List<Category>,
     onItemClick: (CatalogItem) -> Unit,
+    onContinueClick: (CatalogItem, ContinueInfo) -> Unit,
+    onNewEpisodeClick: (CatalogItem, Episode) -> Unit,
+    onUpNextClick: (CatalogItem, Episode) -> Unit,
     onOpenCategory: (Category) -> Unit,
     onRemoveContinue: (CatalogItem) -> Unit,
+    onRemoveMyList: (CatalogItem) -> Unit,
+    onMarkUpNextWatched: (CatalogItem, Episode) -> Unit,
+    onRemoveUpNext: (CatalogItem, Episode) -> Unit,
     topBar: @Composable (Modifier) -> Unit,
     topBarRequester: FocusRequester,
     focusTopBar: () -> Unit,
     preferTopBarFocus: Boolean,
     onTopBarFocusConsumed: () -> Unit,
 ) {
+    // Como en Bambi: el Inicio arranca en la portada (destacados + categorías); ▼ baja a las filas.
     var inRows by rememberSaveable { mutableStateOf(false) }
     var topFocus by rememberSaveable { mutableStateOf(TopFocus.HERO) }
-    // Portada y filas conservan su estado al pasar de una a otra (botón de categoría, tarjeta enfocada…).
     val saveable = rememberSaveableStateHolder()
-    if (inRows && rows.isNotEmpty()) saveable.SaveableStateProvider("rows") {
-        RowsBrowser(
-            rows = rows,
-            onItemClick = onItemClick,
-            onRemoveContinue = onRemoveContinue,
-            onExitTop = {
-                topFocus = TopFocus.CHIPS
-                inRows = false
-            },
-            onBack = {
-                topFocus = if (featured.isNotEmpty()) TopFocus.HERO else TopFocus.CHIPS
-                inRows = false
-            },
-        )
-    } else saveable.SaveableStateProvider("billboard") {
-        Billboard(
-            featured = featured,
-            categories = categories,
-            initialFocus = topFocus,
-            onFocusChange = { topFocus = it },
-            onItemClick = onItemClick,
-            onOpenCategory = onOpenCategory,
-            onEnterRows = { if (rows.isNotEmpty()) inRows = true },
-            topBar = topBar,
-            topBarRequester = topBarRequester,
-            focusTopBar = focusTopBar,
-            preferTopBarFocus = preferTopBarFocus,
-            onTopBarFocusConsumed = onTopBarFocusConsumed,
-        )
+    // Swapping the rows view and the billboard disposes the focused item, and the new view only
+    // requests focus a frame later. Park focus on this holder meanwhile; otherwise it falls to the
+    // top bar and the screen jumps.
+    var parkingFocus by remember { mutableStateOf(false) }
+    val parkingRequester = remember { FocusRequester() }
+    fun switchView(change: () -> Unit) {
+        parkingFocus = true
+        change()
+    }
+    LaunchedEffect(parkingFocus) {
+        if (parkingFocus) runCatching { parkingRequester.requestFocus() }
+    }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .focusRequester(parkingRequester)
+            .onFocusChanged { if (it.hasFocus && !it.isFocused) parkingFocus = false }
+            .focusProperties { canFocus = parkingFocus }
+            .focusTarget(),
+    ) {
+        if (inRows && rows.isNotEmpty()) saveable.SaveableStateProvider("rows") {
+            RowsBrowser(
+                rows = rows,
+                onItemClick = onItemClick,
+                onContinueClick = onContinueClick,
+                onNewEpisodeClick = onNewEpisodeClick,
+                onUpNextClick = onUpNextClick,
+                onRemoveContinue = onRemoveContinue,
+                onRemoveMyList = onRemoveMyList,
+                onMarkUpNextWatched = onMarkUpNextWatched,
+                onRemoveUpNext = onRemoveUpNext,
+                onExitTop = {
+                    topFocus = TopFocus.CHIPS
+                    switchView { inRows = false }
+                },
+                onBack = {
+                    topFocus = if (featured.isNotEmpty()) TopFocus.HERO else TopFocus.CHIPS
+                    switchView { inRows = false }
+                },
+            )
+        } else saveable.SaveableStateProvider("billboard") {
+            Billboard(
+                featured = featured,
+                categories = categories,
+                initialFocus = topFocus,
+                onFocusChange = { topFocus = it },
+                onItemClick = onItemClick,
+                onOpenCategory = onOpenCategory,
+                onEnterRows = { if (rows.isNotEmpty()) switchView { inRows = true } },
+                topBar = topBar,
+                topBarRequester = topBarRequester,
+                focusTopBar = focusTopBar,
+                preferTopBarFocus = preferTopBarFocus,
+                onTopBarFocusConsumed = onTopBarFocusConsumed,
+            )
+        }
     }
 }
 
-/** Portada: menú + destacados + categorías. Atrás (fuera del menú) lleva el foco al menú. */
 @Composable
 private fun Billboard(
     featured: List<FeaturedItem>,
@@ -232,8 +314,8 @@ private fun Billboard(
                 focusTopBar()
                 onTopBarFocusConsumed()
             }
-            initialFocus == TopFocus.HERO && featured.isNotEmpty() -> runCatching { heroRequester.requestFocus() }
-            else -> runCatching { chipsRequester.requestFocus() }
+            initialFocus == TopFocus.HERO && featured.isNotEmpty() -> heroRequester.requestFocusWithRetry()
+            else -> chipsRequester.requestFocusWithRetry()
         }
     }
     Column(
@@ -251,8 +333,7 @@ private fun Billboard(
                     .weight(1f)
                     .focusRequester(heroRequester)
                     // ▲ desde la portada → la pestaña activa del menú (no la más cercana).
-                    // ▼ → el botón de categoría que se ve a la izquierda (el recordado), no el "más cercano"
-                    // geométricamente: con una portada tan ancha Android elegía uno más a la derecha.
+                    // ▼ → el botón de categoría recordado, no el "más cercano" geométricamente.
                     .focusProperties {
                         up = topBarRequester
                         down = chipsRequester
@@ -274,33 +355,30 @@ private fun Billboard(
     }
 }
 
-/**
- * Fondo + información del título enfocado + filas en bucle. Lo usan el Inicio (al bajar) y las categorías.
- * [header]: título grande arriba (categorías). [onExitTop]: ▲ en la primera fila.
- */
 @Composable
 internal fun RowsBrowser(
     rows: List<CatalogRow>,
     onItemClick: (CatalogItem) -> Unit,
     onRemoveContinue: (CatalogItem) -> Unit,
+    onRemoveMyList: (CatalogItem) -> Unit,
     onExitTop: (() -> Unit)?,
+    onNewEpisodeClick: ((CatalogItem, Episode) -> Unit)? = null,
+    onContinueClick: ((CatalogItem, ContinueInfo) -> Unit)? = null,
+    onUpNextClick: ((CatalogItem, Episode) -> Unit)? = null,
+    onMarkUpNextWatched: ((CatalogItem, Episode) -> Unit)? = null,
+    onRemoveUpNext: ((CatalogItem, Episode) -> Unit)? = null,
     onBack: () -> Unit,
     header: String? = null,
 ) {
-    // Última tarjeta enfocada: "fila/posición virtual". rememberSaveable: sobrevive a ir al detalle y volver.
-    // IMPORTANTE (fluidez): este estado NO se lee al componer. Si se leyera, cada paso del mando recomponía toda la
-    // pantalla y todas las filas visibles (frames de 50-150 ms medidos en la Shield). Lo leen solo los listeners.
     val savedFocus = rememberSaveable { mutableStateOf(firstKey(rows.first())) }
-    // Si esa tarjeta ya no existe (p. ej. se terminó la peli de "Seguir viendo"), la primera de las filas.
     fun validKey(key: String) = if (findByKey(rows, key) != null) key else firstKey(rows.first())
-    // Clave de "volver aquí" para las filas: cambia al entrar en la pantalla o al quitar un título de Seguir viendo.
     var restoreKey by remember { mutableStateOf(Snapshot.withoutReadObservation { validKey(savedFocus.value) }) }
     var lastVerticalRepeat by remember { mutableStateOf(0L) }
-    // Tras quitar una tarjeta de "Seguir viendo", el foco salta a la vecina cuando llegan las filas nuevas.
-    var pendingRefocus by remember { mutableStateOf(false) }
+    var pendingFocus by remember { mutableStateOf<PendingFocus?>(null) }
+    var continueMenu by remember { mutableStateOf<ItemMenu?>(null) }
+    var myListMenu by remember { mutableStateOf<ItemMenu?>(null) }
+    var upNextMenu by remember { mutableStateOf<UpNextMenu?>(null) }
 
-    // Fondo e información de arriba: cambian 300 ms después de pararse en un título (al recorrer rápido una fila no
-    // se piden 20 fondos seguidos al Tegra). Se escucha el estado sin leerlo al componer.
     var hero by remember { mutableStateOf(Snapshot.withoutReadObservation { findByKey(rows, restoreKey) ?: rows.first().items.first() }) }
     LaunchedEffect(rows) {
         snapshotFlow { savedFocus.value }.collectLatest { key ->
@@ -309,27 +387,25 @@ internal fun RowsBrowser(
         }
     }
 
-    // Al entrar (o volver del detalle) el foco va a la tarjeta que tenía.
     val restoreRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) {
-        withFrameNanos { }
-        runCatching { restoreRequester.requestFocus() }
+        restoreRequester.requestFocusWithRetry()
     }
     LaunchedEffect(rows) {
-        if (pendingRefocus) {
-            withFrameNanos { }
-            runCatching { restoreRequester.requestFocus() }
-            pendingRefocus = false
-        }
+        val pending = pendingFocus ?: return@LaunchedEffect
+        restoreKey = pending.itemKey
+            ?.let { itemKey -> focusKeyForItem(rows, pending.rowId, itemKey) }
+            ?: pending.fallbackKey
+        savedFocus.value = restoreKey
+        restoreRequester.requestFocusWithRetry()
+        pendingFocus = null
     }
 
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(RowBackground)
             .onBackKey(enabled = true) { onBack() }
-            // Botón ▲▼ mantenido: el mando repite unas 20 veces por segundo y cada paso monta una fila nueva. Se deja
-            // pasar una repetición cada 130 ms: la lista baja a ritmo constante en vez de atascarse y dar saltos.
             .onPreviewKeyEvent { e ->
                 val vertical = e.key == Key.DirectionDown || e.key == Key.DirectionUp
                 if (e.type != KeyEventType.KeyDown || !vertical || e.nativeKeyEvent.repeatCount == 0) return@onPreviewKeyEvent false
@@ -337,7 +413,7 @@ internal fun RowsBrowser(
                 if (now - lastVerticalRepeat < 130) true else { lastVerticalRepeat = now; false }
             },
     ) {
-        HeroBackdrop(hero)
+        if (!LocalLightweightUi.current) HeroBackdrop(hero)
         Column(Modifier.fillMaxSize()) {
             Column(
                 Modifier
@@ -351,13 +427,11 @@ internal fun RowsBrowser(
                         text = it.uppercase(Lang.locale),
                         fontFamily = DisplayFont,
                         fontSize = 30.sp,
-                        color = Color(0xFFE50914),
+                        color = AppColors.Accent,
                     )
                 }
                 HeroInfo(item = hero)
             }
-            // Deja visible el título de la fila enfocada. 51 dp = los 42 de antes + lo que crece hacia arriba el póster
-            // enfocado (×1.1): ahora se alinea la tarjeta sin escalar (ver PosterCard), así la pantalla queda igual.
             ProvidePivotScroll(leading = 51.dp) {
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth().weight(1f),
@@ -370,12 +444,12 @@ internal fun RowsBrowser(
                             restoreRequester = restoreRequester,
                             onFocused = { virtual -> savedFocus.value = keyOf(row, virtual) },
                             onItemClick = onItemClick,
-                            onRemove = { virtual, item ->
-                                savedFocus.value = neighbourKey(rows, row, virtual)
-                                restoreKey = savedFocus.value
-                                pendingRefocus = true
-                                onRemoveContinue(item)
-                            },
+                            onNewEpisodeClick = onNewEpisodeClick,
+                            onContinueClick = onContinueClick,
+                            onUpNextClick = onUpNextClick,
+                            onContinueMenu = { virtual, item -> continueMenu = ItemMenu(row, virtual, item) },
+                            onMyListMenu = { virtual, item -> myListMenu = ItemMenu(row, virtual, item) },
+                            onUpNextMenu = { virtual, item, episode -> upNextMenu = UpNextMenu(row, virtual, item, episode) },
                             modifier = if (rowIndex == 0 && onExitTop != null) {
                                 Modifier.onPreviewKeyEvent { event ->
                                     if (event.type == KeyEventType.KeyDown && event.key == Key.DirectionUp) {
@@ -393,8 +467,98 @@ internal fun RowsBrowser(
                 }
             }
         }
+        continueMenu?.let { menu ->
+            ContinueActions(
+                item = menu.item,
+                onDetails = {
+                    continueMenu = null
+                    onItemClick(menu.item)
+                },
+                onRemove = {
+                    pendingFocus = PendingFocus(menu.row.id, itemKey = null, fallbackKey = neighbourKey(rows, menu.row, menu.virtual))
+                    onRemoveContinue(menu.item)
+                    continueMenu = null
+                },
+                onCancel = { continueMenu = null },
+            )
+        }
+        myListMenu?.let { menu ->
+            MyListActions(
+                item = menu.item,
+                onDetails = {
+                    myListMenu = null
+                    onItemClick(menu.item)
+                },
+                onRemove = {
+                    pendingFocus = PendingFocus(menu.row.id, itemKey = null, fallbackKey = neighbourKey(rows, menu.row, menu.virtual))
+                    onRemoveMyList(menu.item)
+                    myListMenu = null
+                },
+                onCancel = { myListMenu = null },
+            )
+        }
+        upNextMenu?.let { menu ->
+            UpNextActions(
+                item = menu.item,
+                onDetails = {
+                    upNextMenu = null
+                    onItemClick(menu.item)
+                },
+                onMarkWatched = {
+                    pendingFocus = PendingFocus(
+                        menu.row.id,
+                        itemKey = menu.item.key,
+                        fallbackKey = neighbourKey(rows, menu.row, menu.virtual),
+                    )
+                    onMarkUpNextWatched?.invoke(menu.item, menu.episode)
+                    upNextMenu = null
+                },
+                onRemove = {
+                    pendingFocus = PendingFocus(menu.row.id, itemKey = null, fallbackKey = neighbourKey(rows, menu.row, menu.virtual))
+                    onRemoveUpNext?.invoke(menu.item, menu.episode)
+                    upNextMenu = null
+                },
+                onCancel = { upNextMenu = null },
+            )
+        }
     }
 }
+
+@Composable
+private fun ContinueActions(
+    item: CatalogItem,
+    onDetails: () -> Unit,
+    onRemove: () -> Unit,
+    onCancel: () -> Unit,
+) = ActionMenuDialog(
+    title = item.title,
+    onDismiss = onCancel,
+    consumeOpeningKeyRelease = true,
+    actions = listOf(
+        ActionMenuItem(localizedStringResource(StringsR.string.home_cancel), LineIcons.Close, onCancel),
+        ActionMenuItem(localizedStringResource(StringsR.string.home_view_details), AppIcons.List, onDetails),
+        ActionMenuItem(localizedStringResource(StringsR.string.home_remove), LineIcons.Delete, onRemove),
+    ),
+)
+
+@Composable
+private fun UpNextActions(
+    item: CatalogItem,
+    onDetails: () -> Unit,
+    onMarkWatched: () -> Unit,
+    onRemove: () -> Unit,
+    onCancel: () -> Unit,
+) = ActionMenuDialog(
+    title = item.title,
+    onDismiss = onCancel,
+    consumeOpeningKeyRelease = true,
+    actions = listOf(
+        ActionMenuItem(localizedStringResource(StringsR.string.home_cancel), LineIcons.Close, onCancel),
+        ActionMenuItem(localizedStringResource(StringsR.string.home_view_details), AppIcons.List, onDetails),
+        ActionMenuItem(localizedStringResource(StringsR.string.home_mark_watched), LineIcons.Eye, onMarkWatched),
+        ActionMenuItem(localizedStringResource(StringsR.string.home_remove), LineIcons.Delete, onRemove),
+    ),
+)
 
 @Composable
 private fun CatalogRowView(
@@ -403,7 +567,12 @@ private fun CatalogRowView(
     restoreRequester: FocusRequester,
     onFocused: (Int) -> Unit,
     onItemClick: (CatalogItem) -> Unit,
-    onRemove: (Int, CatalogItem) -> Unit,
+    onNewEpisodeClick: ((CatalogItem, Episode) -> Unit)?,
+    onContinueClick: ((CatalogItem, ContinueInfo) -> Unit)?,
+    onUpNextClick: ((CatalogItem, Episode) -> Unit)?,
+    onContinueMenu: (Int, CatalogItem) -> Unit,
+    onMyListMenu: (Int, CatalogItem) -> Unit,
+    onUpNextMenu: (Int, CatalogItem, Episode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxWidth()) {
@@ -416,17 +585,16 @@ private fun CatalogRowView(
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                 color = Color.White,
             )
-            if (row.style == RowStyle.CONTINUE) {
+            if (row.style == RowStyle.CONTINUE || row.style == RowStyle.UP_NEXT || row.style == RowStyle.MY_LIST) {
                 Text(
-                    text = tr("   Mantén OK para quitar", "   Hold OK to remove"),
+                    text = "   " + localizedStringResource(StringsR.string.home_hold_ok_for_options),
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.White.copy(alpha = 0.45f),
                 )
             }
         }
-        // Con menos de 8 títulos no hay bucle: si cambia (p. ej. al quitar uno), la fila empieza de cero.
         key(shouldLoop(row.items.size)) {
-            // + 6 dp: lo que crece por cada lado el póster enfocado; así su borde sigue alineado con el título de la fila.
+            // + 6 dp: lo que crece por cada lado el póster enfocado; así su borde sigue alineado con el título.
             ProvidePivotScroll(leading = ContentStart + 6.dp) {
                 LazyRow(
                     state = rememberLoopingRowState(row.items.size),
@@ -436,10 +604,19 @@ private fun CatalogRowView(
                     loopingItems(row.items) { virtual, index, item ->
                         val itemModifier = if (keyOf(row, virtual) == focusKey) Modifier.focusRequester(restoreRequester) else Modifier
                         when (row.style) {
-                            RowStyle.POSTER -> PosterCard(
+                            RowStyle.POSTER -> CatalogPosterCard(
                                 item = item,
                                 onClick = { onItemClick(item) },
                                 onFocused = { onFocused(virtual) },
+                                newEpisodeCount = row.newEpisodeCounts[item.key] ?: 0,
+                                modifier = itemModifier,
+                            )
+                            RowStyle.MY_LIST -> CatalogPosterCard(
+                                item = item,
+                                onClick = { onItemClick(item) },
+                                onFocused = { onFocused(virtual) },
+                                onLongClick = { onMyListMenu(virtual, item) },
+                                newEpisodeCount = row.newEpisodeCounts[item.key] ?: 0,
                                 modifier = itemModifier,
                             )
                             RowStyle.CONTINUE -> {
@@ -448,17 +625,83 @@ private fun CatalogRowView(
                                     item = item,
                                     fraction = info?.fraction ?: 0f,
                                     label = info?.label.orEmpty(),
-                                    onClick = { onItemClick(item) },
-                                    onLongClick = { onRemove(virtual, item) },
+                                    onClick = {
+                                        if (info == null || onContinueClick == null) onItemClick(item)
+                                        else onContinueClick(item, info)
+                                    },
+                                    onLongClick = { onContinueMenu(virtual, item) },
+                                    onFocused = { onFocused(virtual) },
+                                    newEpisodeCount = row.newEpisodeCounts[item.key] ?: 0,
+                                    modifier = itemModifier,
+                                )
+                            }
+                            RowStyle.NEW_EPISODES -> {
+                                val episode = row.newEpisodes[item.key]
+                                val episodeCode = episode?.localizedCode()
+                                val episodeLabel = remember(row.newEpisodes, item.key, episodeCode) {
+                                    episode?.let {
+                                        listOf(episodeCode.orEmpty(), formatEpisodeDate(it.airDate)).filter { part -> part.isNotEmpty() }.joinToString(" · ")
+                                    }.orEmpty()
+                                }
+                                NewEpisodeCard(
+                                    item = item,
+                                    label = episodeLabel,
+                                    count = row.newEpisodeCounts[item.key] ?: 1,
+                                    onClick = {
+                                        if (episode == null || onNewEpisodeClick == null) onItemClick(item)
+                                        else onNewEpisodeClick(item, episode)
+                                    },
                                     onFocused = { onFocused(virtual) },
                                     modifier = itemModifier,
                                 )
+                            }
+                            RowStyle.UP_NEXT -> {
+                                val info = row.upNext[item.key]
+                                val episode = info?.episode
+                                val episodeCode = episode?.localizedCode()
+                                val episodeLabel = remember(row.upNext, item.key, episodeCode) {
+                                    episode?.let {
+                                        listOf(episodeCode.orEmpty(), it.title).filter { part -> part.isNotEmpty() }.joinToString(" · ")
+                                    }.orEmpty()
+                                }
+                                val releaseLabel = remember(row.upNext, item.key) {
+                                    formatEpisodeDate(episode?.airDate)
+                                }
+                                val badgeText = when (upNextBadge(info)) {
+                                    UpNextBadge.NEW_SEASON -> localizedStringResource(StringsR.string.home_new_season)
+                                    UpNextBadge.NEW_EPISODE -> localizedStringResource(StringsR.string.home_new_episode)
+                                    UpNextBadge.UP_NEXT -> localizedStringResource(StringsR.string.home_up_next)
+                                }
+                                if (episode == null) {
+                                    CatalogPosterCard(
+                                        item = item,
+                                        onClick = { onItemClick(item) },
+                                        onFocused = { onFocused(virtual) },
+                                        modifier = itemModifier,
+                                    )
+                                } else {
+                                    // Bambi: póster con la etiqueta (A continuación / Nuevo episodio) y el capítulo abajo.
+                                    LabeledPosterCard(
+                                        item = item,
+                                        badge = badgeText,
+                                        badgeDot = upNextBadge(info) != UpNextBadge.UP_NEXT,
+                                        label = listOf(episodeLabel, releaseLabel).filter { it.isNotEmpty() }.joinToString("\n"),
+                                        onClick = {
+                                            if (onUpNextClick == null) onItemClick(item)
+                                            else onUpNextClick(item, episode)
+                                        },
+                                        onLongClick = { onUpNextMenu(virtual, item, episode) },
+                                        onFocused = { onFocused(virtual) },
+                                        modifier = itemModifier,
+                                    )
+                                }
                             }
                             RowStyle.TOP10 -> Top10Card(
                                 rank = index + 1,
                                 item = item,
                                 onClick = { onItemClick(item) },
                                 onFocused = { onFocused(virtual) },
+                                newEpisodeCount = row.newEpisodeCounts[item.key] ?: 0,
                                 modifier = itemModifier,
                             )
                         }
@@ -474,14 +717,19 @@ private fun CatalogRowView(
 private fun HeroBackdrop(item: CatalogItem) {
     Box(Modifier.fillMaxSize()) {
         val area = Modifier.align(Alignment.TopEnd).fillMaxWidth(0.74f).fillMaxHeight(0.70f)
-        Crossfade(targetState = item.backdropUrl, animationSpec = tween(450), label = "heroBackdrop", modifier = area) { url ->
-            if (url != null) {
-                AsyncImage(
-                    model = url,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
-                )
+        val url = BackdropUrls.fullScreen(item.backdropUrl, lightweight = false, highRes = LocalHighResBackdrops.current)
+        Crossfade(targetState = url, animationSpec = tween(450), label = "heroBackdrop", modifier = area) { u ->
+            if (u != null) {
+                if (LocalSoftBackdrops.current) {
+                    SoftBackdropImage(url = u, modifier = Modifier.fillMaxSize())
+                } else {
+                    AsyncImage(
+                        model = u,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
         Box(
@@ -532,8 +780,9 @@ private fun HeroInfo(item: CatalogItem) {
     }
 }
 
+@Composable
 private fun metaLine(item: CatalogItem): String = buildList {
-    add(if (item.type == MediaType.TV) tr("Serie", "Series") else tr("Película", "Movie"))
+    add(if (item.type == MediaType.TV) localizedStringResource(StringsR.string.home_series) else localizedStringResource(StringsR.string.home_movie))
     item.year?.let { add(it.toString()) }
     item.rating?.takeIf { it > 0f }?.let { add("★ " + String.format(Lang.locale, "%.1f", it)) }
 }.joinToString("  ·  ")
@@ -541,10 +790,6 @@ private fun metaLine(item: CatalogItem): String = buildList {
 private val BillboardBackground = Brush.verticalGradient(listOf(Color(0xFF151622), Color.Black))
 private val SkeletonColor = Color(0xFF1C1E2A)
 
-/**
- * Opacidad del esqueleto de carga: no aparece hasta pasados 250 ms y entra con fundido. Si los datos llegan
- * antes (caché / precarga) solo se ve el fondo oscuro y no hay "parpadeo" de cajas.
- */
 @Composable
 private fun delayedSkeletonAlpha(): Float {
     var visible by remember { mutableStateOf(false) }
@@ -556,54 +801,71 @@ private fun delayedSkeletonAlpha(): Float {
     return alpha
 }
 
-/** Esqueleto con la forma de la portada (tarjeta grande + botones de categoría) mientras carga. */
+@Composable
+private fun skeletonPulse(): Float {
+    if (LocalLightweightUi.current) return 0.8f
+    val transition = rememberInfiniteTransition(label = "skeletonPulse")
+    val pulse by transition.animateFloat(
+        initialValue = 0.55f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1_100), RepeatMode.Reverse),
+        label = "skeletonPulseAlpha",
+    )
+    return pulse
+}
+
 @Composable
 private fun ColumnScope.BillboardSkeleton() {
-    val alpha = delayedSkeletonAlpha()
+    val alpha = delayedSkeletonAlpha() * skeletonPulse()
     Box(
         Modifier
             .weight(1f)
             .fillMaxWidth()
-            .padding(horizontal = 28.dp)
             .graphicsLayer { this.alpha = alpha }
-            .background(Brush.verticalGradient(listOf(Color(0xFF191B27), Color(0xFF111219))), RoundedCornerShape(18.dp)),
+            .background(Brush.verticalGradient(listOf(AppColors.BackgroundRaised, AppColors.Background))),
     ) {
-        Column(Modifier.align(Alignment.BottomStart).padding(start = 40.dp, bottom = 40.dp)) {
-            Box(Modifier.width(300.dp).height(46.dp).background(SkeletonColor, RoundedCornerShape(6.dp)))
+        Column(Modifier.align(Alignment.BottomStart).padding(start = 48.dp, bottom = 40.dp)) {
+            Box(Modifier.width(320.dp).height(42.dp).background(SkeletonColor, AppShapes.Badge))
             Spacer(Modifier.height(14.dp))
-            Box(Modifier.width(380.dp).height(18.dp).background(SkeletonColor, RoundedCornerShape(4.dp)))
+            Box(Modifier.width(340.dp).height(16.dp).background(SkeletonColor, AppShapes.Badge))
+            Spacer(Modifier.height(18.dp))
+            Box(Modifier.width(126.dp).height(36.dp).background(SkeletonColor, AppShapes.Pill))
         }
     }
     Row(
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 28.dp, top = 14.dp, bottom = 20.dp)
+            .padding(start = 48.dp, top = 10.dp, bottom = 16.dp)
             .graphicsLayer { this.alpha = alpha },
     ) {
-        repeat(8) {
-            Box(Modifier.width(150.dp).height(48.dp).background(SkeletonColor, RoundedCornerShape(10.dp)))
+        repeat(8) { index ->
+            Box(
+                Modifier
+                    .width((104 + (index % 3) * 18).dp)
+                    .height(40.dp)
+                    .background(SkeletonColor, AppShapes.Pill),
+            )
         }
     }
 }
 
-/** Esqueleto de filas (pantallas de categoría). */
 @Composable
 internal fun HomeSkeleton() {
-    val alpha = delayedSkeletonAlpha()
+    val alpha = delayedSkeletonAlpha() * skeletonPulse()
     Column(
         Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(AppColors.Background)
             .graphicsLayer { this.alpha = alpha }
-            .padding(start = ContentStart, top = 204.dp),
+            .padding(start = ContentStart, top = 140.dp),
     ) {
         repeat(2) {
             Box(
                 Modifier
                     .width(180.dp)
                     .height(18.dp)
-                    .background(SkeletonColor, RoundedCornerShape(4.dp)),
+                    .background(SkeletonColor, AppShapes.Badge),
             )
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -612,7 +874,7 @@ internal fun HomeSkeleton() {
                         Modifier
                             .width(PosterWidth)
                             .aspectRatio(2f / 3f)
-                            .background(SkeletonColor, RoundedCornerShape(6.dp)),
+                            .background(SkeletonColor, AppShapes.Control),
                     )
                 }
             }
@@ -629,17 +891,15 @@ internal fun HomeError(message: String, onRetry: () -> Unit, modifier: Modifier 
         runCatching { retryRequester.requestFocus() }
     }
     Column(
-        modifier.background(Color.Black),
+        modifier.background(AppColors.Background),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         Text(message, color = Color.White, style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(16.dp))
-        TvButton(text = tr("Reintentar", "Retry"), onClick = onRetry, modifier = Modifier.focusRequester(retryRequester))
+        TvButton(text = localizedStringResource(StringsR.string.home_retry), onClick = onRetry, modifier = Modifier.focusRequester(retryRequester))
     }
 }
-
-// --- Claves de foco: "fila/posición virtual" (en filas en bucle el mismo título aparece en varias posiciones) ---
 
 private fun keyOf(row: CatalogRow, virtual: Int) = "${row.id}/$virtual"
 
@@ -654,7 +914,13 @@ private fun findByKey(rows: List<CatalogRow>, key: String?): CatalogItem? {
     return row.items[virtual % row.items.size]
 }
 
-/** Tarjeta que recibe el foco al quitar la de [virtual]: la que pasa a ocupar su sitio, la anterior o la fila de abajo. */
+internal fun focusKeyForItem(rows: List<CatalogRow>, rowId: String, itemKey: String): String? {
+    val row = rows.firstOrNull { it.id == rowId } ?: return null
+    val index = row.items.indexOfFirst { it.key == itemKey }
+    if (index < 0) return null
+    return keyOf(row, firstVirtualIndex(row.items.size) + index)
+}
+
 private fun neighbourKey(rows: List<CatalogRow>, row: CatalogRow, virtual: Int): String {
     val newSize = row.items.size - 1
     if (newSize <= 0) {

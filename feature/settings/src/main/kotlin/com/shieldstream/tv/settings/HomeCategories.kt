@@ -1,5 +1,7 @@
 package com.shieldstream.tv.settings
 
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.localizedStringResource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -36,10 +38,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.shieldstream.tv.model.Category
-import com.shieldstream.tv.model.tr
+import com.shieldstream.tv.strings.localizedTitle
 import com.shieldstream.tv.ui.component.tvClickable
 import kotlinx.coroutines.delay
 
@@ -48,57 +48,8 @@ private val PanelFocused = Color(0xFF2A2D3D)
 private val Dim = Color.White.copy(alpha = 0.6f)
 private val Red = Color(0xFFE50914)
 
-/**
- * Ajustes → "Categorías del Inicio": los botones bajo la portada (Dramas, Terror, Españolas…).
- * OK abre la lista para mostrar u ocultar cada una.
- */
 @Composable
-internal fun HomeCategoriesCard(viewModel: SettingsViewModel = hiltViewModel()) {
-    val hidden by viewModel.hiddenCategories.collectAsStateWithLifecycle()
-    var open by remember { mutableStateOf(false) }
-    var focused by remember { mutableStateOf(false) }
-    val total = Category.entries.size
-    val visible = Category.entries.count { it.name !in hidden }
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(if (focused) PanelFocused else Panel, RoundedCornerShape(14.dp))
-            .border(
-                width = if (focused) 2.dp else 1.dp,
-                color = if (focused) Color.White else Color.White.copy(alpha = 0.08f),
-                shape = RoundedCornerShape(14.dp),
-            )
-            .onFocusChanged { focused = it.isFocused }
-            .tvClickable { open = true }
-            .padding(horizontal = 24.dp, vertical = 18.dp),
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(tr("Categorías del Inicio", "Home categories"), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            Text(
-                tr(
-                    "Los botones bajo la portada (Dramas, Terror, Españolas…). Se ven $visible de $total.",
-                    "The buttons under the billboard (Dramas, Horror, Korean…). $visible of $total shown.",
-                ),
-                color = Dim,
-                fontSize = 15.sp,
-            )
-        }
-        Spacer(Modifier.width(16.dp))
-        Text(tr("OK para elegir ›", "OK to choose ›"), color = Dim, fontSize = 16.sp)
-    }
-    if (open) {
-        HomeCategoriesDialog(
-            hidden = hidden,
-            onToggle = viewModel::toggleCategory,
-            onShowAll = viewModel::showAllCategories,
-            onClose = { open = false },
-        )
-    }
-}
-
-@Composable
-private fun HomeCategoriesDialog(
+internal fun HomeCategoriesDialog(
     hidden: Set<String>,
     onToggle: (Category) -> Unit,
     onShowAll: () -> Unit,
@@ -119,13 +70,10 @@ private fun HomeCategoriesDialog(
                 .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(18.dp))
                 .padding(28.dp),
         ) {
-            Text(tr("Categorías del Inicio", "Home categories"), color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+            Text(localizedStringResource(StringsR.string.settings_home_categories), color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(4.dp))
             Text(
-                tr(
-                    "OK muestra u oculta cada una. Atrás para terminar. Siempre queda al menos una.",
-                    "OK shows or hides each one. Back when you're done. At least one always stays.",
-                ),
+                localizedStringResource(StringsR.string.settings_ok_shows_or_hides_each_one_back),
                 color = Dim,
                 fontSize = 16.sp,
             )
@@ -135,7 +83,7 @@ private fun HomeCategoriesDialog(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 contentPadding = PaddingValues(4.dp),
-                modifier = Modifier.height(300.dp), // la Shield mide 540 dp de alto: la lista se desplaza
+                modifier = Modifier.height(300.dp),
             ) {
                 itemsIndexed(Category.entries, key = { _, c -> c.name }) { index, category ->
                     CategoryToggle(
@@ -148,8 +96,8 @@ private fun HomeCategoriesDialog(
             }
             Spacer(Modifier.height(18.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                DialogButton(tr("Mostrar todas", "Show all"), onShowAll)
-                DialogButton(tr("Listo", "Done"), onClose)
+                DialogButton(localizedStringResource(StringsR.string.settings_show_all), onShowAll)
+                DialogButton(localizedStringResource(StringsR.string.settings_done), onClose)
             }
         }
     }
@@ -172,7 +120,6 @@ private fun CategoryToggle(category: Category, shown: Boolean, onClick: () -> Un
             .tvClickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 12.dp),
     ) {
-        // Casilla: roja con ✓ si se ve; vacía si está oculta.
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
@@ -184,7 +131,7 @@ private fun CategoryToggle(category: Category, shown: Boolean, onClick: () -> Un
         }
         Spacer(Modifier.width(12.dp))
         Text(
-            category.title,
+            category.localizedTitle(),
             color = if (shown) Color.White else Dim,
             fontSize = 16.sp,
             maxLines = 1,
@@ -200,7 +147,7 @@ private fun DialogButton(text: String, onClick: () -> Unit) {
         text,
         color = if (focused) Color.Black else Color.White,
         fontSize = 17.sp,
-        fontWeight = FontWeight.SemiBold,
+        fontWeight = FontWeight.Bold,
         modifier = Modifier
             .background(if (focused) Color.White else Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
             .onFocusChanged { focused = it.isFocused }

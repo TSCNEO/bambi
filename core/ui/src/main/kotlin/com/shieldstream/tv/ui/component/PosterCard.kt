@@ -1,21 +1,25 @@
 package com.shieldstream.tv.ui.component
 
+import com.shieldstream.tv.ui.theme.AppColors
+import com.shieldstream.tv.ui.theme.LocalLightweightUi
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -41,13 +45,26 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import com.shieldstream.tv.model.CatalogItem
+import com.shieldstream.tv.strings.R
+import com.shieldstream.tv.strings.localizedPluralResource
+import com.shieldstream.tv.strings.localizedStringResource
 
 val PosterWidth: Dp = 124.dp
 private val CardShape = RoundedCornerShape(6.dp)
 
+/** Escala al enfocar como en Bambi (animada, salvo con la interfaz ligera). */
+@Composable
+private fun focusScale(focused: Boolean, target: Float): Float =
+    if (LocalLightweightUi.current) {
+        if (focused) target else 1f
+    } else {
+        animateFloatAsState(if (focused) target else 1f, label = "posterScale").value
+    }
+
 /**
  * Póster 2:3 con foco estilo Netflix TV: escala + borde blanco. Sin ripple.
- * [onFocused] se usa para actualizar el fondo/hero de la pantalla.
+ * [onFocused] se usa para actualizar el fondo/hero de la pantalla. [newEpisodeCount] > 0 pinta la etiqueta de
+ * capítulos nuevos. [caption] se mantiene por compatibilidad (Bambi no pone texto bajo los pósteres).
  */
 @Composable
 fun PosterCard(
@@ -57,10 +74,12 @@ fun PosterCard(
     onFocused: () -> Unit = {},
     width: Dp = PosterWidth,
     onLongClick: (() -> Unit)? = null,
+    newEpisodeCount: Int = 0,
+    @Suppress("UNUSED_PARAMETER") caption: (@Composable ColumnScope.() -> Unit)? = null,
     overlay: @Composable BoxScope.() -> Unit = {},
 ) {
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (focused) 1.1f else 1f, label = "posterScale")
+    val scale = focusScale(focused, 1.1f)
 
     Box(
         modifier = modifier
@@ -68,8 +87,7 @@ fun PosterCard(
             .width(width)
             .aspectRatio(2f / 3f)
             // Bambi 1.0.6: el foco (clickable) va ANTES que la escala. Si la escala va delante, el rectángulo que
-            // la tarjeta pide "traer a la vista" crece con la animación (1.0 → 1.1) y la lista de filas lo sigue
-            // en vertical: el "saltito" de las carátulas en todas las filas menos la primera.
+            // la tarjeta pide "traer a la vista" crece con la animación y la lista de filas da un "saltito".
             .onFocusChanged {
                 focused = it.isFocused
                 if (it.isFocused) onFocused()
@@ -99,57 +117,70 @@ fun PosterCard(
             )
         }
         overlay()
+        if (newEpisodeCount > 0) {
+            StatusPill(
+                text = localizedPluralResource(R.plurals.poster_new_episodes, newEpisodeCount, newEpisodeCount),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp),
+            )
+        }
     }
 }
 
-/**
- * Tarjeta de "Seguir viendo": póster con la etiqueta (T1:E6 · 14 min) y la barra roja de progreso.
- * Mantener OK → [onLongClick] (quitar de la fila).
- */
+/** Póster de catálogo (filas de Inicio, Mi lista…): en Bambi es el mismo póster sin texto debajo. */
 @Composable
-fun ContinueCard(
+fun CatalogPosterCard(
     item: CatalogItem,
-    fraction: Float,
-    label: String,
     onClick: () -> Unit,
-    onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
     onFocused: () -> Unit = {},
+    width: Dp = PosterWidth,
+    onLongClick: (() -> Unit)? = null,
+    newEpisodeCount: Int = 0,
 ) {
     PosterCard(
         item = item,
         onClick = onClick,
         modifier = modifier,
         onFocused = onFocused,
+        width = width,
         onLongClick = onLongClick,
-    ) {
-        Box(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .height(84.dp)
-                .background(
-                    Brush.verticalGradient(
-                        0f to Color.Transparent,
-                        0.45f to Color.Black.copy(alpha = 0.75f),
-                        1f to Color.Black.copy(alpha = 0.95f),
-                    ),
+        newEpisodeCount = newEpisodeCount,
+    )
+}
+
+/** Degradado inferior con una o dos líneas de texto (y barra de progreso opcional), como "Seguir viendo". */
+@Composable
+private fun BoxScope.BottomLabel(label: String, fraction: Float?) {
+    Box(
+        Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .height(84.dp)
+            .background(
+                Brush.verticalGradient(
+                    0f to Color.Transparent,
+                    0.45f to Color.Black.copy(alpha = 0.75f),
+                    1f to Color.Black.copy(alpha = 0.95f),
                 ),
+            ),
+    )
+    Column(
+        Modifier
+            .align(Alignment.BottomStart)
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+    ) {
+        Text(
+            text = label,
+            color = Color.White,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
         )
-        Column(
-            Modifier
-                .align(Alignment.BottomStart)
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-        ) {
-            Text(
-                text = label,
-                color = Color.White,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+        if (fraction != null) {
             Spacer(Modifier.height(5.dp))
             Box(
                 Modifier
@@ -162,10 +193,102 @@ fun ContinueCard(
                     Modifier
                         .fillMaxHeight()
                         .fillMaxWidth(fraction.coerceIn(0f, 1f))
-                        .background(Color(0xFFE50914)),
+                        .background(AppColors.Accent),
                 )
             }
         }
+    }
+}
+
+/**
+ * Tarjeta de "Seguir viendo": póster con la etiqueta (T1:E6 · 14 min) y la barra roja de progreso.
+ * Mantener OK → [onLongClick] (opciones). [newEpisodeCount]: capítulos nuevos de la serie.
+ */
+@Composable
+fun ContinueCard(
+    item: CatalogItem,
+    fraction: Float,
+    label: String,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    onFocused: () -> Unit = {},
+    newEpisodeCount: Int = 0,
+) {
+    PosterCard(
+        item = item,
+        onClick = onClick,
+        modifier = modifier,
+        onFocused = onFocused,
+        onLongClick = onLongClick,
+        newEpisodeCount = newEpisodeCount,
+    ) {
+        BottomLabel(label, fraction)
+    }
+}
+
+/** Episodio recién emitido o por llegar: póster con la etiqueta roja arriba y el capítulo abajo. */
+@Composable
+fun NewEpisodeCard(
+    item: CatalogItem,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    onFocused: () -> Unit = {},
+    count: Int = 1,
+    onLongClick: (() -> Unit)? = null,
+) {
+    PosterCard(
+        item = item,
+        onClick = onClick,
+        modifier = modifier,
+        onFocused = onFocused,
+        onLongClick = onLongClick,
+    ) {
+        StatusPill(
+            text = if (count == 0) {
+                localizedStringResource(R.string.coming_soon)
+            } else {
+                localizedPluralResource(R.plurals.new_episode_count, count, count)
+            },
+            dot = count > 0,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(6.dp),
+        )
+        if (label.isNotEmpty()) BottomLabel(label, fraction = null)
+    }
+}
+
+/** Póster con una etiqueta arriba (p. ej. "A continuación") y un texto abajo (capítulo / fecha). */
+@Composable
+fun LabeledPosterCard(
+    item: CatalogItem,
+    badge: String,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    onFocused: () -> Unit = {},
+    badgeDot: Boolean = false,
+    onLongClick: (() -> Unit)? = null,
+) {
+    PosterCard(
+        item = item,
+        onClick = onClick,
+        modifier = modifier,
+        onFocused = onFocused,
+        onLongClick = onLongClick,
+    ) {
+        if (badge.isNotEmpty()) {
+            StatusPill(
+                text = badge,
+                dot = badgeDot,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp),
+            )
+        }
+        if (label.isNotEmpty()) BottomLabel(label, fraction = null)
     }
 }
 
@@ -179,6 +302,7 @@ fun Top10Card(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     onFocused: () -> Unit = {},
+    newEpisodeCount: Int = 0,
 ) {
     val numberWidth = if (rank >= 10) 104.dp else 70.dp
     val posterHeight = PosterWidth * 1.5f
@@ -203,6 +327,7 @@ fun Top10Card(
             item = item,
             onClick = onClick,
             onFocused = onFocused,
+            newEpisodeCount = newEpisodeCount,
             modifier = modifier.align(Alignment.BottomEnd),
         )
     }

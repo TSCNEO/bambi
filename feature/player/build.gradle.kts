@@ -12,6 +12,7 @@ android {
 
     defaultConfig {
         minSdk = 21
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildFeatures {
@@ -25,13 +26,18 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
     implementation(project(":core:model"))
+    implementation(project(":core:strings"))
     implementation(project(":core:domain"))
     implementation(project(":core:media"))
-    implementation(project(":core:ui")) // iconos de los controles
+    implementation(project(":core:ui"))
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
@@ -47,9 +53,18 @@ dependencies {
     implementation(libs.media3.common)
     implementation(libs.media3.transformer) // miniaturas al buscar (ExperimentalFrameExtractor)
     implementation(libs.media3.effect)
-    implementation(libs.androidx.concurrent.futures) // ThumbFrameExtractor (copia del de Media3)
+    implementation(libs.androidx.concurrent.futures)
     implementation(libs.kotlinx.coroutines.android)
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.mockk)
+    testImplementation(libs.robolectric)
+
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.okhttp.mockwebserver)
 }

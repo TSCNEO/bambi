@@ -1,10 +1,12 @@
 package com.shieldstream.tv.data.repository
 
-import com.shieldstream.tv.model.tr
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.Texts
 import android.net.Uri
 import android.util.Log
 import com.shieldstream.tv.domain.DebridLink
 import com.shieldstream.tv.domain.DebridService
+import com.shieldstream.tv.domain.StremioAddons
 import com.shieldstream.tv.domain.TorrentioLinkResolver
 import com.shieldstream.tv.network.dto.TorrentioStreamDto
 import kotlinx.coroutines.Dispatchers
@@ -15,29 +17,16 @@ import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/*
- * Debrids a través de Torrentio (TorBox, Premiumize, AllDebrid, Debrid-Link, Offcloud).
- * Formato comprobado en el código de Torrentio (torrentio-scraper, addon/moch):
- *  - Configuración en la ruta:  https://torrentio.strem.fun/torbox=CLAVE/stream/movie/tt0137523.json
- *  - Fuente en caché:   name = "[TB+] Torrentio\n4k", url = …/resolve/torbox/CLAVE/HASH/…/fileIdx/archivo
- *  - Fuente sin caché:  name = "[TB download] Torrentio\n…" (pedirla la pone a descargar en la cuenta)
- *  - Error de cuenta:   name = "Torrentio\nTB error", title = "Invalid TorBox ApiKey/Token!", url = …/videos/…
- *  - /resolve/ responde 302 al enlace directo del debrid, o a un vídeo de aviso de Torrentio (carpeta videos/ de Torrentio).
- */
-
-/** Trozo de configuración de Torrentio para el servicio: "torbox=CLAVE". */
 internal fun torrentioConfig(debrid: DebridService, key: String): String = "${debrid.torrentioKey}=${Uri.encode(key)}"
 
-/** Fuente de error que Torrentio añade cuando la clave o la cuenta fallan. */
 internal fun TorrentioStreamDto.isDebridError(): Boolean =
     url?.contains("/videos/") == true && name.contains("error", ignoreCase = true)
 
-/** Traduce el aviso de Torrentio ("Invalid TorBox ApiKey/Token!", "Expired/invalid … subscription!"…). */
-internal fun debridErrorMessage(title: String, service: String): String = when {
-    title.contains("expired", ignoreCase = true) -> tr("La suscripción de $service ha caducado o no es válida.", "Your $service subscription has expired or isn't valid.")
-    title.contains("invalid", ignoreCase = true) -> tr("Clave de $service no válida. Revísala en Ajustes.", "Invalid $service key. Check it in Settings.")
-    title.contains("blocked", ignoreCase = true) -> tr("$service ha bloqueado el acceso: revisa tu cuenta o el correo.", "$service has blocked access: check your account or email.")
-    else -> tr("$service no está disponible ahora mismo (según Torrentio). Prueba más tarde.", "$service isn't available right now (according to Torrentio). Try again later.")
+internal fun debridErrorMessage(title: String, service: String, texts: Texts): String = when {
+    title.contains("expired", ignoreCase = true) -> texts.get(StringsR.string.data_subscription_expired, service)
+    title.contains("invalid", ignoreCase = true) -> texts.get(StringsR.string.data_invalid_service_key, service)
+    title.contains("blocked", ignoreCase = true) -> texts.get(StringsR.string.data_service_blocked, service)
+    else -> texts.get(StringsR.string.data_service_unavailable_torrentio, service)
 }
 
 private val HASH = Regex("^[0-9a-fA-F]{40}$")
@@ -53,15 +42,12 @@ internal fun parseResolveUrl(url: String): Pair<String, Int?>? {
     return hash to fileIdx
 }
 
-/**
- * Pide el enlace a Torrentio SIN seguir la redirección: la respuesta de /resolve/ ES la redirección (302) al
- * enlace directo del debrid, o a uno de sus vídeos de aviso. Se devuelve el enlace final a ExoPlayer, que así
- * no vuelve a pasar por Torrentio en cada salto de la película.
- */
 @Singleton
-class TorrentioLinkResolverImpl @Inject constructor(base: OkHttpClient) : TorrentioLinkResolver {
+class TorrentioLinkResolverImpl @Inject constructor(
+    base: OkHttpClient,
+    private val texts: Texts,
+) : TorrentioLinkResolver {
 
-    // Torrentio espera a que el debrid prepare el enlace antes de responder: más margen que el resto de peticiones.
     private val client = base.newBuilder()
         .followRedirects(false)
         .followSslRedirects(false)
@@ -72,7 +58,6 @@ class TorrentioLinkResolverImpl @Inject constructor(base: OkHttpClient) : Torren
     override suspend fun resolve(url: String, service: String): DebridLink = withContext(Dispatchers.IO) {
         var current = url
         repeat(MAX_HOPS) {
-            // Range 0-0: si la cadena llega al vídeo, solo se pide 1 byte.
             val request = Request.Builder().url(current).get().header("User-Agent", "Bambi").header("Range", "bytes=0-0").build()
             val next: String? = client.newCall(request).execute().use { response ->
                 val location = response.header("Location")
@@ -80,14 +65,11 @@ class TorrentioLinkResolverImpl @Inject constructor(base: OkHttpClient) : Torren
                     response.isRedirect && location != null ->
                         response.request.url.resolve(location)?.toString() ?: location
                     response.isSuccessful -> {
-                        // Un 2xx no basta: Comet, sin la fuente disponible, redirige a su página /configure (HTML)
-                        // y ExoPlayer fallaba con PARSING_CONTAINER_UNSUPPORTED. Si no es vídeo, la fuente no vale
-                        // y la cola pasa a la siguiente.
                         val type = response.header("Content-Type").orEmpty().lowercase()
                         if (type.startsWith("text/") || "json" in type) {
                             val host = Uri.parse(current).host
                             return@withContext DebridLink.Problem(
-                                tr("$host no ha devuelto un vídeo para esta fuente.", "$host didn't return a video for this source."),
+                                texts.get(StringsR.string.data_no_video_for_source, host.toString()),
                                 notCached = false,
                             )
                         }
@@ -95,7 +77,7 @@ class TorrentioLinkResolverImpl @Inject constructor(base: OkHttpClient) : Torren
                     }
                     else -> {
                         return@withContext DebridLink.Problem(
-                        tr("${Uri.parse(current).host} respondió con error ${response.code} al pedir el enlace a $service.", "${Uri.parse(current).host} responded with error ${response.code} when requesting the $service link."),
+                        texts.get(StringsR.string.data_link_http_error, Uri.parse(current).host.toString(), response.code, service),
                         notCached = false,
                     )
                     }
@@ -109,7 +91,7 @@ class TorrentioLinkResolverImpl @Inject constructor(base: OkHttpClient) : Torren
             if (isResolverHost(url) && !isResolverHost(next)) return@withContext DebridLink.Ready(next)
             current = next
         }
-        DebridLink.Problem(tr("Demasiadas redirecciones al pedir el enlace a $service.", "Too many redirects while requesting the $service link."), notCached = false)
+        DebridLink.Problem(texts.get(StringsR.string.data_too_many_redirects, service), notCached = false)
     }
 
     /** Host de un addon que resuelve debrid redirigiendo: Torrentio o Peerflix (addon.peerflix.mov). */
@@ -118,28 +100,27 @@ class TorrentioLinkResolverImpl @Inject constructor(base: OkHttpClient) : Torren
         return host.contains("torrentio") || host.contains("peerflix")
     }
 
-    /** Vídeos de aviso de Torrentio (addon/moch/static.js) → mensaje en español. */
     private fun staticVideoProblem(url: String, service: String): DebridLink.Problem? {
         if (!isResolverHost(url) || !url.contains("/videos/")) return null
         val file = url.substringAfterLast('/')
         return when {
             file.startsWith("downloading") -> DebridLink.Problem(
-                tr("$service ha empezado a descargar esta fuente (no estaba en su caché). Prueba en unos minutos o elige una con ⚡.", "$service has started downloading this source (it wasn't cached). Try again in a few minutes or pick one with ⚡."),
+                texts.get(StringsR.string.data_download_started, service),
                 notCached = true,
             )
-            file.startsWith("download_failed") -> DebridLink.Problem(tr("$service no pudo descargar esta fuente.", "$service couldn't download this source."), notCached = true)
+            file.startsWith("download_failed") -> DebridLink.Problem(texts.get(StringsR.string.data_download_failed, service), notCached = true)
             file.startsWith("failed_access") -> DebridLink.Problem(
-                tr("Clave de $service no válida o suscripción caducada. Revísala en Ajustes.", "Invalid $service key or expired subscription. Check it in Settings."),
+                texts.get(StringsR.string.data_invalid_or_expired_key, service),
                 notCached = false,
             )
-            file.startsWith("failed_rar") -> DebridLink.Problem(tr("Esta fuente viene en RAR y no se puede reproducir.", "This source is packed in a RAR and can't be played."), notCached = true)
-            file.startsWith("failed_too_big") -> DebridLink.Problem(tr("Esta fuente es demasiado grande para $service.", "This source is too big for $service."), notCached = true)
-            file.startsWith("failed_opening") -> DebridLink.Problem(tr("$service no pudo abrir esta fuente.", "$service couldn't open this source."), notCached = true)
-            file.startsWith("failed_infringement") -> DebridLink.Problem(tr("$service ha bloqueado esta fuente por derechos de autor.", "$service blocked this source for copyright reasons."), notCached = true)
-            file.startsWith("limits_exceeded") -> DebridLink.Problem(tr("Has llegado al límite de descargas de $service.", "You've reached your $service download limit."), notCached = false)
-            file.startsWith("blocked_access") -> DebridLink.Problem(tr("$service ha bloqueado el acceso: revisa tu cuenta o el correo.", "$service has blocked access: check your account or email."), notCached = false)
-            file.startsWith("failed_unavailable") -> DebridLink.Problem(tr("$service no está disponible ahora mismo.", "$service isn't available right now."), notCached = false)
-            else -> DebridLink.Problem(tr("Torrentio no pudo conseguir el enlace de $service.", "Torrentio couldn't get the $service link."), notCached = true)
+            file.startsWith("failed_rar") -> DebridLink.Problem(texts.get(StringsR.string.data_this_source_is_packed_in_a_rar), notCached = true)
+            file.startsWith("failed_too_big") -> DebridLink.Problem(texts.get(StringsR.string.data_source_too_big, service), notCached = true)
+            file.startsWith("failed_opening") -> DebridLink.Problem(texts.get(StringsR.string.data_open_source_failed, service), notCached = true)
+            file.startsWith("failed_infringement") -> DebridLink.Problem(texts.get(StringsR.string.data_source_copyright, service), notCached = true)
+            file.startsWith("limits_exceeded") -> DebridLink.Problem(texts.get(StringsR.string.data_download_limit, service), notCached = false)
+            file.startsWith("blocked_access") -> DebridLink.Problem(texts.get(StringsR.string.data_service_blocked, service), notCached = false)
+            file.startsWith("failed_unavailable") -> DebridLink.Problem(texts.get(StringsR.string.data_service_unavailable, service), notCached = false)
+            else -> DebridLink.Problem(texts.get(StringsR.string.data_torrentio_link_failed, service), notCached = true)
         }
     }
 
@@ -148,16 +129,7 @@ class TorrentioLinkResolverImpl @Inject constructor(base: OkHttpClient) : Torren
     }
 }
 
-/** URL del manifiesto de AIOStreams (también stremio://…) → base para pedir /stream/{type}/{id}.json. */
-/**
- * Varios addons en el mismo campo: URLs separadas por espacios, comas o saltos de línea (en la tele, con el teclado
- * del sistema, se pegan una detrás de otra). Devuelve las bases válidas, sin repetir.
- */
 internal fun aioStreamBases(raw: String): List<String> =
-    raw.split(Regex("[\\s,;]+")).mapNotNull { aioStreamBase(it) }.distinct()
+    StremioAddons.parse(raw).mapNotNull { it.baseUrl }
 
-internal fun aioStreamBase(manifestUrl: String): String? {
-    val u = manifestUrl.trim().replaceFirst("stremio://", "https://")
-    if (!u.startsWith("http") || !u.endsWith("/manifest.json")) return null
-    return u.removeSuffix("/manifest.json")
-}
+internal fun aioStreamBase(manifestUrl: String): String? = StremioAddons.baseUrl(manifestUrl)

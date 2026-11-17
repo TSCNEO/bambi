@@ -38,16 +38,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.shieldstream.tv.model.ProfilePin
-import com.shieldstream.tv.model.tr
 import com.shieldstream.tv.ui.component.AppIcons
 import com.shieldstream.tv.ui.component.tvClickable
 import kotlinx.coroutines.delay
 
-/**
- * Teclado de PIN (4 cifras), como el de Netflix/Nuvio: puntos arriba y teclado numérico en pantalla. También
- * valen los números del mando. Con la cuarta cifra se envía solo ([onPin]); [error] se enseña debajo en rojo y
- * borra lo escrito. Atrás = [onDismiss].
- */
 @Composable
 fun PinDialog(
     title: String,
@@ -65,7 +59,6 @@ fun PinDialog(
             delay(100)
         }
     }
-    // Un error nuevo (PIN incorrecto) vacía lo escrito para volver a intentarlo.
     LaunchedEffect(error) { if (error != null) pin = "" }
     fun type(d: Char) {
         if (pin.length >= length) return
@@ -152,6 +145,6 @@ private fun PinKey(label: String, modifier: Modifier = Modifier, onClick: () -> 
             .onFocusChanged { focused = it.isFocused }
             .tvClickable(onClick = onClick),
     ) {
-        Text(label, color = if (focused) Color.Black else Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+        Text(label, color = if (focused) Color.Black else Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
     }
 }

@@ -12,7 +12,7 @@ y una interfaz pensada para el mando: perfiles, "Seguir viendo" sincronizado con
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.1-7F52FF?logo=kotlin&logoColor=white)
 ![Jetpack Compose](https://img.shields.io/badge/Jetpack%20Compose-TV-4285F4?logo=jetpackcompose&logoColor=white)
 ![Media3](https://img.shields.io/badge/Media3-1.6-3DDC84?logo=android&logoColor=white)
-![Version](https://img.shields.io/badge/versi%C3%B3n-1.0.6-E50914)
+![Version](https://img.shields.io/badge/versi%C3%B3n-1.0.7-E50914)
 ![Licencia](https://img.shields.io/badge/licencia-GPL--3.0-blue)
 
 <img src="docs/screenshots/02-inicio.jpg" alt="Inicio de Bambi" width="900" />
@@ -24,6 +24,7 @@ y una interfaz pensada para el mando: perfiles, "Seguir viendo" sincronizado con
 ## Índice
 
 - [Qué es Bambi](#qué-es-bambi)
+- [Novedades de la 1.0.7](#novedades-de-la-107)
 - [Funciones](#funciones)
   - [Perfiles como en Netflix](#perfiles-como-en-netflix)
   - [Sincronización con Trakt](#sincronización-con-trakt)
@@ -55,6 +56,33 @@ una app **nativa** de Android TV (Kotlin + Jetpack Compose para TV + Media3) que
 - recuerda por dónde vas en cada perfil y lo **sincroniza con Trakt** entre todas tus teles.
 
 Todo pensado para el mando: el foco siempre sabe dónde está, nada de ratones ni menús escondidos.
+
+---
+
+## Novedades de la 1.0.7
+
+La 1.0.7 incorpora todas las funciones de **[Franklix](https://github.com/javiermolinar/franklix)**, el fork de
+Bambi que hizo Javier Molina (javiermolinar), manteniendo el aspecto de Bambi (barra superior, rojo, logo):
+
+- **Configurar desde el móvil:** guía de primera instalación en 4 pasos y editor de claves, buscadores, addons y
+  preferencias desde el móvil o el PC de la misma red (la sesión caduca a los 10 minutos y las claves guardadas no
+  se muestran).
+- **AllDebrid completo:** inicio de sesión con QR y The Pirate Bay, Knaben y Nyaa también con AllDebrid.
+  Real-Debrid sigue siendo el servicio por defecto.
+- **Android TV:** "Seguir viendo" en la fila *Play Next* y en un canal propio de la pantalla de inicio.
+- **Episodios:** centro de estrenos (últimos y próximos 30 días) de las series que sigues, avisos opcionales y
+  contadores de capítulos nuevos; marcar como visto episodio a episodio (mantén OK en un episodio).
+- **Subtítulos:** sincronización automática con el diálogo del propio vídeo y aspecto/idioma por perfil.
+- **Addons de Stremio:** gestor para añadir, cambiar, quitar y probar varios a la vez, con su nombre y logo.
+- **Trakt:** puntuar películas, series y episodios, y recomendaciones en Inicio.
+- **Reproducción:** ajuste de la frecuencia de la tele al vídeo, control completo desde el mando, exclusión de
+  fuentes por calidad/HDR/códec y etiquetas de formato (HDR, Dolby Vision, códecs, decodificación).
+- **Ithil:** fuente opcional con un índice de enlaces desbloqueados con AllDebrid (necesita compilar con su
+  configuración).
+- **Seguridad:** las claves ya no se meten en el APK por defecto, ni en texto plano ni en las copias de seguridad
+  de Android; URLs sensibles fuera de los logs.
+
+El historial detallado está en [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -264,7 +292,7 @@ Torrentio, OpenSubtitles y Podnapisi no necesitan clave.
 
 ## Compilar desde el código
 
-Necesitas **JDK 17** y el **Android SDK** (API 35). El decodificador AV1 de Media3 ya va precompilado en
+Necesitas **JDK 17** y el **Android SDK** (API 37; Gradle 9 y AGP 9). El decodificador AV1 de Media3 ya va precompilado en
 `app/libs/`, igual que las librerías nativas de dav1d.
 
 1. Crea `local.properties` en la raíz del proyecto, con la ruta del SDK y, si quieres, tus claves como valores
@@ -283,8 +311,8 @@ Necesitas **JDK 17** y el **Android SDK** (API 35). El decodificador AV1 de Medi
    traktClientId=...
    traktRedirectUri=https://...       # la misma que pusiste al crear la app
 
-   # seedKeys=false → APK sin tus claves (para dárselo a otra persona)
-   # seedKeys=false
+   # seedKeys=true → incluye tus claves en el APK (solo para tu APK privado; por defecto NO se incluyen)
+   # seedKeys=true
 
    # Firma de la release (si no, usa la clave de depuración)
    releaseStoreFile=keystore/bambi.keystore
@@ -356,6 +384,8 @@ flowchart LR
 - Ideas y lógica de varias funciones (saltar intro, siguiente episodio…) inspiradas en
   **[NuvioTV](https://github.com/NuvioMedia/NuvioTV)** (GPL-3.0).
 - Subtítulos: **OpenSubtitles**, **Podnapisi**, **SubDL**.
+- Muchas funciones de la 1.0.7 vienen de **[Franklix](https://github.com/javiermolinar/franklix)** (GPL-3.0),
+  el fork de Bambi de Javier Molina.
 - Reproducción: **[AndroidX Media3](https://github.com/androidx/media)** y **[dav1d](https://code.videolan.org/videolan/dav1d)**.
   El lector de MKV tolerante es una copia modificada de `MatroskaExtractor` de Media3 (Apache 2.0).
 

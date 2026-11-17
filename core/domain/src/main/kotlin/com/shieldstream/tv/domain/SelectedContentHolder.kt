@@ -7,45 +7,34 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** Episodio que va después del que se reproduce (lo calcula la ficha). [label]: "T1:E2 · Capítulo 2". */
 data class NextEpisode(val showId: String, val season: Int, val episode: Int, val label: String)
 
-/**
- * Estado de navegación compartido en memoria (selección actual).
- * Evita serializar objetos complejos como argumentos de navegación.
- */
+data class EpisodeTarget(val season: Int, val number: Int)
+
+data class DetailsRequest(
+    val item: CatalogItem,
+    val target: EpisodeTarget? = null,
+    val playImmediately: Boolean = false,
+    val requestedAtNs: Long = System.nanoTime(),
+)
+
+data class PlaybackRequest(
+    val sources: List<StreamSource>,
+    val label: String,
+    val progressKey: String? = null,
+    val fromStart: Boolean = false,
+    val media: PlaybackMedia? = null,
+    val next: NextEpisode? = null,
+    val requestedAtNs: Long = System.nanoTime(),
+)
+
 class SelectedContentHolder {
-    private val _selectedItem = MutableStateFlow<CatalogItem?>(null)
-    val selectedItem: StateFlow<CatalogItem?> = _selectedItem.asStateFlow()
+    private val _details = MutableStateFlow<DetailsRequest?>(null)
+    val details: StateFlow<DetailsRequest?> = _details.asStateFlow()
 
-    /**
-     * Cola de reproducción: el reproductor prueba las fuentes en orden hasta que una
-     * esté en la caché de Real-Debrid (sin instantAvailability no hay otra forma de saberlo).
-     */
-    private val _queue = MutableStateFlow<List<StreamSource>>(emptyList())
-    val queue: StateFlow<List<StreamSource>> = _queue.asStateFlow()
+    private val _playback = MutableStateFlow<PlaybackRequest?>(null)
+    val playback: StateFlow<PlaybackRequest?> = _playback.asStateFlow()
 
-    /** Texto que muestra el reproductor mientras resuelve ("Dune: Parte dos", "Severance · T1:E3"). */
-    private val _playLabel = MutableStateFlow("")
-    val playLabel: StateFlow<String> = _playLabel.asStateFlow()
-
-    /** Clave de progreso de lo que se va a reproducir (ver WatchProgress.movieKey / episodeKey). */
-    private val _progressKey = MutableStateFlow<String?>(null)
-    val progressKey: StateFlow<String?> = _progressKey.asStateFlow()
-
-    /** true = "Desde el principio": ignorar el punto guardado. */
-    private val _startFromBeginning = MutableStateFlow(false)
-    val startFromBeginning: StateFlow<Boolean> = _startFromBeginning.asStateFlow()
-
-    /** Qué se reproduce (título, IMDb, temporada/episodio): lo usa la búsqueda de subtítulos externos. */
-    private val _media = MutableStateFlow<PlaybackMedia?>(null)
-    val media: StateFlow<PlaybackMedia?> = _media.asStateFlow()
-
-    /** Siguiente episodio de lo que se va a reproducir (null: película o último episodio). */
-    private val _next = MutableStateFlow<NextEpisode?>(null)
-    val next: StateFlow<NextEpisode?> = _next.asStateFlow()
-
-    /** El reproductor pide el siguiente episodio al salir; la ficha lo recoge al volver a verse. */
     @Volatile private var nextRequested: NextEpisode? = null
 
     fun requestNext(next: NextEpisode) {
@@ -54,7 +43,6 @@ class SelectedContentHolder {
 
     fun consumeNextRequest(): NextEpisode? = nextRequested.also { nextRequested = null }
 
-    /** El reproductor está en los créditos: la ficha (debajo) ya puede ir buscando las fuentes del siguiente. */
     private val _prefetch = MutableStateFlow<NextEpisode?>(null)
     val prefetch: StateFlow<NextEpisode?> = _prefetch.asStateFlow()
 
@@ -62,9 +50,9 @@ class SelectedContentHolder {
         _prefetch.value = next
     }
 
-    fun selectItem(item: CatalogItem) {
-        _selectedItem.value = item
-        _queue.value = emptyList()
+    fun selectItem(item: CatalogItem, target: EpisodeTarget? = null, playImmediately: Boolean = false) {
+        _details.value = DetailsRequest(item, target, playImmediately)
+        _playback.value = null
         _prefetch.value = null
     }
 
@@ -75,12 +63,8 @@ class SelectedContentHolder {
         fromStart: Boolean = false,
         media: PlaybackMedia? = null,
         next: NextEpisode? = null,
+        requestedAtNs: Long = System.nanoTime(),
     ) {
-        _next.value = next
-        _media.value = media
-        _queue.value = sources
-        _playLabel.value = label
-        _progressKey.value = progressKey
-        _startFromBeginning.value = fromStart
+        _playback.value = PlaybackRequest(sources, label, progressKey, fromStart, media, next, requestedAtNs)
     }
 }

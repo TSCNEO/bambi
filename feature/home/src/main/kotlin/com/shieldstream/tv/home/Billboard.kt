@@ -1,7 +1,13 @@
 package com.shieldstream.tv.home
 
 import com.shieldstream.tv.model.Lang
-import com.shieldstream.tv.model.tr
+import com.shieldstream.tv.strings.R as StringsR
+import com.shieldstream.tv.strings.localizedStringResource
+import com.shieldstream.tv.model.BackdropUrls
+import com.shieldstream.tv.strings.localizedLabel
+import com.shieldstream.tv.strings.localizedTitle
+import com.shieldstream.tv.ui.theme.LocalHighResBackdrops
+import com.shieldstream.tv.ui.theme.LocalLightweightUi
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -90,8 +96,10 @@ internal fun FeaturedCarousel(
     if (index >= items.size) index = 0
     var focused by remember { mutableStateOf(false) }
     // Cambiar de destacado a mano reinicia la cuenta (el efecto depende de index).
-    LaunchedEffect(index, items.size) {
-        if (items.size > 1) {
+    // Interfaz ligera (Ajustes): sin avance automático para ahorrar trabajo en cajas lentas.
+    val lightweightUi = LocalLightweightUi.current
+    LaunchedEffect(index, items.size, lightweightUi) {
+        if (!lightweightUi && items.size > 1) {
             delay(10_000)
             index = (index + 1) % items.size
         }
@@ -147,7 +155,11 @@ private fun FeaturedSlide(featured: FeaturedItem) {
     val item = featured.item
     Box(Modifier.fillMaxSize().background(Color(0xFF111114))) {
         AsyncImage(
-            model = item.backdropUrl,
+            model = BackdropUrls.fullScreen(
+                url = item.backdropUrl,
+                lightweight = LocalLightweightUi.current,
+                highRes = LocalHighResBackdrops.current,
+            ),
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize(),
@@ -203,7 +215,7 @@ private fun FeaturedSlide(featured: FeaturedItem) {
 private fun MetaLine(featured: FeaturedItem) {
     val item = featured.item
     val text = listOfNotNull(
-        if (item.type == MediaType.TV) tr("Serie", "Series") else tr("Película", "Movie"),
+        if (item.type == MediaType.TV) localizedStringResource(StringsR.string.home_series) else localizedStringResource(StringsR.string.home_movie),
         featured.genre,
         item.year?.toString(),
         featured.durationText,
@@ -260,7 +272,7 @@ private fun BadgeChip(badge: FeaturedBadge, modifier: Modifier = Modifier) {
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
         Text(
-            text = badge.label,
+            text = badge.localizedLabel(),
             color = Color.White,
             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
         )
@@ -376,7 +388,7 @@ private fun CategoryChip(
             .padding(horizontal = 22.dp),
     ) {
         Text(
-            text = category.title.uppercase(UiLocale),
+            text = category.localizedTitle().uppercase(UiLocale),
             fontFamily = DisplayFont,
             fontSize = 25.sp,
             letterSpacing = 0.6.sp,
